@@ -1,0 +1,33 @@
+name: Trigger AM/PM briefing
+
+on:
+  schedule:
+    # 01:30 UTC = 07:00 IST
+    - cron: '30 1 * * *'
+    # 15:30 UTC = 21:00 IST
+    - cron: '30 15 * * *'
+  workflow_dispatch: {} # lets you trigger manually from the Actions tab too
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine session from current UTC hour
+        id: session
+        run: |
+          HOUR=$(date -u +%H)
+          if [ "$HOUR" = "01" ]; then echo "session=AM" >> "$GITHUB_OUTPUT"
+          else echo "session=PM" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Call backend
+        run: |
+          curl -sf -X POST "${{ secrets.BACKEND_URL }}/api/briefing/run" \
+            -H "Content-Type: application/json" \
+            -H "x-app-secret: ${{ secrets.APP_SHARED_SECRET }}" \
+            -d "{\"session\":\"${{ steps.session.outputs.session }}\"}"
+
+# Setup: in your GitHub repo, go to Settings → Secrets and variables → Actions,
+# and add two repository secrets:
+#   BACKEND_URL           e.g. https://your-app.onrender.com
+#   APP_SHARED_SECRET     the same value as backend/.env's APP_SHARED_SECRET

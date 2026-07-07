@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>0700 / 2100 — Briefing Room</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#10131B;--ink-2:#171B27;--ink-3:#1E2433;
+  --paper:#F1EBDD;--paper-2:#E8E1CE;
+  --ink-text:#1B1B16;--ink-text-dim:rgba(27,27,22,.60);
+  --paper-text:#ECE6D6;--paper-text-dim:rgba(236,230,214,.58);
+  --dawn:#C98A2B;--dawn-soft:rgba(201,138,43,.16);
+  --dusk:#7C6CC0;--dusk-soft:rgba(124,108,192,.18);
+  --go:#4C7A4A;--go-soft:rgba(76,122,74,.18);
+  --signal:#C1473A;--signal-soft:rgba(193,71,58,.16);
+  --line-dark:rgba(236,230,214,.14);--line-light:rgba(27,27,22,.13);
+  --radius:4px;
+  --font-display:'Fraunces',serif;--font-body:'IBM Plex Sans',sans-serif;--font-mono:'IBM Plex Mono',monospace;
+}
+*{box-sizing:border-box;}
+body{margin:0;background:var(--ink);color:var(--paper-text);font-family:var(--font-body);}
+a{color:inherit;}
+button{font-family:inherit;cursor:pointer;}
+.shell{max-width:1100px;margin:0 auto;padding:20px 20px 60px;}
+.topbar{display:flex;justify-content:space-between;align-items:center;padding-bottom:16px;border-bottom:1px solid var(--line-dark);flex-wrap:wrap;gap:10px;}
+.mark{font-family:var(--font-display);font-weight:700;font-size:24px;}
+.mark span{color:var(--dawn);}
+.api-config{font-family:var(--font-mono);font-size:11px;color:var(--paper-text-dim);}
+.api-config input{background:var(--ink-2);border:1px solid var(--line-dark);color:var(--paper-text);padding:6px 8px;border-radius:4px;font-family:var(--font-mono);font-size:11px;width:260px;}
+.tabs{display:flex;gap:6px;margin:18px 0;}
+.tab{background:none;border:1px solid var(--line-dark);color:var(--paper-text-dim);padding:8px 16px;border-radius:4px;font-family:var(--font-mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;}
+.tab.active{background:var(--paper);color:var(--ink-text);border-color:var(--paper);}
+.pill{padding:7px 13px;border-radius:999px;border:1px solid var(--line-dark);font-family:var(--font-mono);font-size:11px;color:var(--paper-text-dim);background:none;}
+.pill.active{border-color:var(--dawn);color:var(--dawn);background:var(--dawn-soft);}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:14px;}
+.btn{padding:9px 16px;border-radius:4px;font-family:var(--font-mono);font-size:11px;letter-spacing:1px;text-transform:uppercase;border:1px solid var(--line-dark);background:none;color:var(--paper-text-dim);}
+.btn-primary{background:var(--paper);color:var(--ink-text);border-color:var(--paper);}
+.btn:disabled{opacity:.4;}
+.sheet{background:var(--paper);color:var(--ink-text);border-radius:6px;padding:22px;margin-bottom:16px;}
+.meta{display:flex;gap:8px;flex-wrap:wrap;font-family:var(--font-mono);font-size:10px;text-transform:uppercase;color:var(--ink-text-dim);border-bottom:1px solid var(--line-light);padding-bottom:12px;margin-bottom:16px;}
+.stamp{background:var(--paper-2);padding:3px 8px;border-radius:3px;}
+.stamp.good{background:var(--go-soft);color:#3E6B3C;}
+.stamp.low{background:var(--signal-soft);color:var(--signal);}
+.topic{padding-bottom:18px;margin-bottom:18px;border-bottom:1px dashed var(--line-light);}
+.topic h3{font-family:var(--font-display);font-size:18px;margin:0 0 8px;}
+.eyebrow{display:flex;gap:6px;font-family:var(--font-mono);font-size:9.5px;text-transform:uppercase;color:var(--ink-text-dim);margin-bottom:8px;}
+.eyebrow span{border:1px solid var(--line-light);padding:2px 6px;border-radius:3px;}
+.point{margin-bottom:8px;font-size:14px;line-height:1.55;}
+.point .q{}
+.point a{font-family:var(--font-mono);font-size:11px;color:var(--ink-text-dim);text-decoration:underline;}
+.pw-tag{color:var(--dawn);border-color:var(--dawn);}
+.analysis{margin-top:12px;border-top:1px solid var(--line-light);padding-top:12px;}
+.a-label{font-family:var(--font-mono);font-size:9px;text-transform:uppercase;color:var(--ink-text-dim);margin-bottom:4px;}
+.a-text{font-size:14px;line-height:1.6;margin-bottom:10px;}
+.forecast{background:var(--ink);color:var(--paper-text);padding:12px 14px;border-radius:4px;margin-bottom:10px;}
+.empty,.err{border:1px dashed var(--line-dark);border-radius:4px;padding:24px;color:var(--paper-text-dim);}
+.err{border-color:var(--signal);}
+.drive-item{display:flex;justify-content:space-between;padding:10px 14px;border:1px solid var(--line-dark);border-radius:4px;margin-bottom:8px;font-family:var(--font-mono);font-size:12px;background:var(--ink-2);}
+.drive-item button{font-size:10px;}
+.archive-body{background:var(--paper);color:var(--ink-text);padding:16px;border-radius:6px;font-size:14px;line-height:1.6;}
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="topbar">
+    <div class="mark">07<span>0</span>0 / 2100</div>
+    <div class="api-config">
+      Backend: <input id="apiBase" placeholder="https://your-app.onrender.com" value="http://localhost:3000">
+      Secret: <input id="appSecret" type="password" placeholder="x-app-secret">
+    </div>
+  </div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="briefing">Briefing</button>
+    <button class="tab" data-tab="archive">Archive</button>
+    <button class="tab" data-tab="weekly">Weekly</button>
+  </div>
+
+  <section id="tab-briefing">
+    <div class="row">
+      <button class="pill active" id="pillAM">Morning · 0700</button>
+      <button class="pill" id="pillPM">Evening · 2100</button>
+      <button class="btn btn-primary" id="runBtn">Run Briefing</button>
+    </div>
+    <div class="row">
+      <button class="pill active" id="viewSum">Summary (12)</button>
+      <button class="pill" id="viewAna">Analysis (Top 5)</button>
+      <span style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim)">switching does not re-run the briefing</span>
+    </div>
+    <div id="briefingContent"><div class="empty">Press Run Briefing to generate today's dispatch.</div></div>
+  </section>
+
+  <section id="tab-archive" style="display:none;">
+    <div class="row">
+      <button class="pill active" id="archSum">Summary</button>
+      <button class="pill" id="archAna">Analysis</button>
+    </div>
+    <h4 style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;color:var(--paper-text-dim)">Generated Dispatches</h4>
+    <div id="archiveDispatches"></div>
+    <h4 style="font-family:var(--font-mono);font-size:11px;text-transform:uppercase;color:var(--paper-text-dim);margin-top:24px">Google Drive Notes</h4>
+    <div id="archiveDrive"></div>
+    <div id="driveViewer"></div>
+  </section>
+
+  <section id="tab-weekly" style="display:none;">
+    <div class="row"><button class="btn btn-primary" id="weeklyBtn">Generate Weekly Digest</button></div>
+    <div id="weeklyContent"><div class="empty">No digest yet.</div></div>
+  </section>
+</div>
+
+<script>
+const el = id => document.getElementById(id);
+function apiBase(){ return el('apiBase').value.replace(/\/$/,''); }
+function headers(){ const h={'Content-Type':'application/json'}; const s=el('appSecret').value; if(s) h['x-app-secret']=s; return h; }
+async function api(path, opts={}){
+  const res = await fetch(apiBase()+path, { ...opts, headers: headers() });
+  const data = await res.json();
+  if(!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+let state = { session:'AM', view:'summary', archView:'summary', current:null, archiveDispatches:[], archiveDrive:[] };
+
+function pointsHtml(t){
+  return (t.points||[]).map(p=>`<div class="point"><span class="q">&#8220;${esc(p.quote)}&#8221;</span> — <a href="${p.url}" target="_blank" rel="noopener">${esc(p.sourceName)}</a></div>`).join('');
+}
+function analysisHtml(a){
+  if(!a) return '';
+  return `<div class="analysis">
+    <div class="a-label">What Happened</div><div class="a-text">${esc(a.whatHappened)}</div>
+    <div class="a-label">Right &amp; Wrong</div><div class="a-text">${esc(a.rightWrong)}</div>
+    <div class="a-label">Change from Before</div><div class="a-text">${esc(a.delta)}</div>
+    <div class="forecast"><div class="a-label">Forecast · 24-72h</div>${esc(a.forecast)}</div>
+    <div class="a-label">Outlook</div><div class="a-text">${esc(a.outlook)}</div>
+    <div class="a-text" style="font-family:var(--font-mono);font-size:11px">${esc(a.confidence)} · ${a.confidencePct}% · ${esc(a.confidenceReason)}</div>
+  </div>`;
+}
+function topicHtml(t, showAnalysis){
+  return `<div class="topic">
+    <div class="eyebrow"><span>${esc(t.topicId)}</span><span>${esc(t.thread)}</span>${t.storyDate?`<span>${esc(t.storyDate)}</span>`:''}</div>
+    <h3>${esc(t.headline)}</h3>
+    ${pointsHtml(t)}
+    ${showAnalysis ? analysisHtml(t.analysis) : ''}
+  </div>`;
+}
+function sheetHtml(record, view){
+  const topics = view==='analysis' ? record.topics.filter(t=>t.detailed) : record.topics;
+  const v = record.verify||{};
+  return `<div class="sheet">
+    <div class="meta">
+      <span>${record.session==='AM'?'Morning · 0700':'Evening · 2100'}</span>
+      <span>${record.date}</span>
+      <span class="stamp ${v.clean?'good':'low'}">${v.clean?'verified':'fixed '+v.fixed+' / dropped '+v.dropped}</span>
+      ${record.partial?'<span class="stamp low">partial</span>':''}
+      <button class="btn" onclick="saveToDrive('${record.date}','${record.session}')">Save to Drive</button>
+    </div>
+    ${topics.map(t=>topicHtml(t, view==='analysis')).join('') || '<div class="empty">Nothing in this view.</div>'}
+  </div>`;
+}
+
+async function runBriefing(){
+  el('runBtn').disabled = true;
+  el('briefingContent').innerHTML = '<div class="empty">Generating — 12 summaries, 5 analyses, cross-verified by Claude + Gemini…</div>';
+  try{
+    const record = await api('/api/briefing/run', { method:'POST', body: JSON.stringify({ session: state.session }) });
+    state.current = record;
+    el('briefingContent').innerHTML = sheetHtml(record, state.view);
+  }catch(e){
+    el('briefingContent').innerHTML = `<div class="err"><b>Error</b> ${esc(e.message)}</div>`;
+  }finally{
+    el('runBtn').disabled = false;
+  }
+}
+async function saveToDrive(date, session){
+  try{
+    const r = await api('/api/drive/save', { method:'POST', body: JSON.stringify({ date, session }) });
+    alert('Saved to Drive: ' + (r.webViewLink || r.fileId));
+  }catch(e){ alert('Save failed: '+e.message); }
+}
+window.saveToDrive = saveToDrive;
+
+async function loadArchive(){
+  try{
+    state.archiveDispatches = await api('/api/briefings');
+  }catch(e){ state.archiveDispatches = []; }
+  try{
+    state.archiveDrive = await api('/api/drive/archive');
+  }catch(e){ state.archiveDrive = []; }
+  renderArchive();
+}
+function renderArchive(){
+  el('archiveDispatches').innerHTML = state.archiveDispatches.map(r=>sheetHtml(r, state.archView)).join('') || '<div class="empty">No dispatches yet.</div>';
+  el('archiveDrive').innerHTML = state.archiveDrive.map(f=>`
+    <div class="drive-item">
+      <span>${esc(f.name)} — ${new Date(f.modifiedTime).toLocaleDateString()}</span>
+      <button class="btn" onclick="viewDriveFile('${f.id}')">Open</button>
+    </div>`).join('') || '<div class="empty">No Drive folder configured, or it is empty.</div>';
+}
+async function viewDriveFile(fileId){
+  el('driveViewer').innerHTML = '<div class="empty">Loading…</div>';
+  try{
+    const r = await api('/api/drive/file/'+fileId);
+    el('driveViewer').innerHTML = `<div class="archive-body"><h3>${esc(r.name)}</h3>${r.html}</div>`;
+  }catch(e){
+    el('driveViewer').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }
+}
+window.viewDriveFile = viewDriveFile;
+
+async function runWeekly(){
+  el('weeklyBtn').disabled = true;
+  el('weeklyContent').innerHTML = '<div class="empty">Synthesising…</div>';
+  try{
+    const r = await api('/api/weekly/run', { method:'POST' });
+    el('weeklyContent').innerHTML = `<div class="sheet"><h3>${r.week_start} – ${r.week_end}</h3><p>${esc(r.narrative)}</p>
+      ${(r.top_stories||[]).map((s,i)=>`<div class="topic"><h3>${i+1}. ${esc(s.title)}</h3><p>${esc(s.summary)}</p></div>`).join('')}</div>`;
+  }catch(e){
+    el('weeklyContent').innerHTML = `<div class="err">${esc(e.message)}</div>`;
+  }finally{
+    el('weeklyBtn').disabled = false;
+  }
+}
+
+// Tabs
+document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+  b.classList.add('active');
+  ['briefing','archive','weekly'].forEach(t=>el('tab-'+t).style.display = t===b.dataset.tab?'':'none');
+  if(b.dataset.tab==='archive') loadArchive();
+}));
+el('pillAM').addEventListener('click',()=>{state.session='AM';el('pillAM').classList.add('active');el('pillPM').classList.remove('active');});
+el('pillPM').addEventListener('click',()=>{state.session='PM';el('pillPM').classList.add('active');el('pillAM').classList.remove('active');});
+el('viewSum').addEventListener('click',()=>{state.view='summary';el('viewSum').classList.add('active');el('viewAna').classList.remove('active');if(state.current)el('briefingContent').innerHTML=sheetHtml(state.current,state.view);});
+el('viewAna').addEventListener('click',()=>{state.view='analysis';el('viewAna').classList.add('active');el('viewSum').classList.remove('active');if(state.current)el('briefingContent').innerHTML=sheetHtml(state.current,state.view);});
+el('archSum').addEventListener('click',()=>{state.archView='summary';el('archSum').classList.add('active');el('archAna').classList.remove('active');renderArchive();});
+el('archAna').addEventListener('click',()=>{state.archView='analysis';el('archAna').classList.add('active');el('archSum').classList.remove('active');renderArchive();});
+el('runBtn').addEventListener('click', runBriefing);
+el('weeklyBtn').addEventListener('click', runWeekly);
+</script>
+</body>
+</html>
