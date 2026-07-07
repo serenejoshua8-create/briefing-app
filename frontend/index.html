@@ -157,7 +157,6 @@ function sheetHtml(record, view){
       <span>${record.date}</span>
       <span class="stamp ${v.clean?'good':'low'}">${v.clean?'verified':'fixed '+v.fixed+' / dropped '+v.dropped}</span>
       ${record.partial?'<span class="stamp low">partial</span>':''}
-      <button class="btn" onclick="saveToDrive('${record.date}','${record.session}')">Save to Drive</button>
     </div>
     ${topics.map(t=>topicHtml(t, view==='analysis')).join('') || '<div class="empty">Nothing in this view.</div>'}
   </div>`;
@@ -176,14 +175,6 @@ async function runBriefing(){
     el('runBtn').disabled = false;
   }
 }
-async function saveToDrive(date, session){
-  try{
-    const r = await api('/api/drive/save', { method:'POST', body: JSON.stringify({ date, session }) });
-    alert('Saved to Drive: ' + (r.webViewLink || r.fileId));
-  }catch(e){ alert('Save failed: '+e.message); }
-}
-window.saveToDrive = saveToDrive;
-
 async function loadArchive(){
   try{
     state.archiveDispatches = await api('/api/briefings');

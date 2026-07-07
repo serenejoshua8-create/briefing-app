@@ -18,15 +18,11 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-const oauth2Client = new google.auth.OAuth2(
-  process.env.GOOGLE_CLIENT_ID,
-  process.env.GOOGLE_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI
-);
-if (process.env.GOOGLE_REFRESH_TOKEN) {
-  oauth2Client.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
-}
-const drive = google.drive({ version: 'v3', auth: oauth2Client });
+const driveAuth = new google.auth.GoogleAuth({
+  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '{}'),
+  scopes: ['https://www.googleapis.com/auth/drive'],
+});
+const drive = google.drive({ version: 'v3', auth: driveAuth });
 
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 const GEMINI_MODEL = 'gemini-2.5-flash';
@@ -406,7 +402,10 @@ Respond with ONLY valid JSON: {"narrative":"...","topStories":[{"title":"...","s
 });
 
 /* ============================================================
-   Routes — Google Drive (archive of past notes + save new dispatches)
+   Routes — Google Drive (read-only archive of past notes)
+   A service account has no Drive storage quota of its own, so it can
+   read files shared with it but cannot create new files in a personal
+   Gmail Drive. Generated dispatches are archived in Supabase only.
    ============================================================ */
 app.get('/api/drive/archive', async (req, res) => {
   try {
@@ -444,51 +443,6 @@ app.get('/api/drive/file/:fileId', async (req, res) => {
     res.status(500).json({ error: e.message || String(e) });
   }
 });
-
-app.post('/api/drive/save', requireSecret, async (req, res) => {
-  try {
-    const { date, session } = req.body;
-    const { data: record, error } = await supabase.from('briefings').select('*').eq('date', date).eq('session', session).single();
-    if (error || !record) return res.status(404).json({ error: 'Dispatch not found.' });
-
-    const html = renderDispatchAsHtml(record);
-
-    const fileMeta = {
-      name: `Briefing ${date} ${session}`,
-      mimeType: 'application/vnd.google-apps.document',
-      parents: [process.env.GOOGLE_DRIVE_FOLDER_ID],
-    };
-    const media = { mimeType: 'text/html', body: html };
-    const created = await drive.files.create({ requestBody: fileMeta, media, fields: 'id, webViewLink' });
-
-    await supabase.from('briefings').update({ drive_file_id: created.data.id }).eq('date', date).eq('session', session);
-    await supabase.from('drive_sync_log').insert({ drive_file_id: created.data.id, action: 'write' });
-
-    res.json({ ok: true, fileId: created.data.id, webViewLink: created.data.webViewLink });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: e.message || String(e) });
-  }
-});
-
-function renderDispatchAsHtml(record) {
-  const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const rows = record.topics.map(t => `
-    <h3>${esc(t.headline)}</h3>
-    <p><em>${esc(t.thread)} — ${esc(t.storyDate || '')}</em></p>
-    <ul>
-      ${(t.points || []).map(p => `<li>"${esc(p.quote)}" — <a href="${p.url}">${esc(p.sourceName)}</a></li>`).join('')}
-    </ul>
-    ${t.analysis ? `<blockquote>
-      <p><b>What happened:</b> ${esc(t.analysis.whatHappened)}</p>
-      <p><b>Right/Wrong:</b> ${esc(t.analysis.rightWrong)}</p>
-      <p><b>Delta:</b> ${esc(t.analysis.delta)}</p>
-      <p><b>Forecast (24-72h):</b> ${esc(t.analysis.forecast)} (${esc(t.analysis.confidence)}, ${t.analysis.confidencePct}%)</p>
-      <p><b>Outlook:</b> ${esc(t.analysis.outlook)}</p>
-    </blockquote>` : ''}
-  `).join('<hr/>');
-  return `<html><body><h1>Briefing — ${record.date} ${record.session}</h1>${rows}</body></html>`;
-}
 
 /* ============================================================
    Health check + start

@@ -4,8 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "get-refresh-token": "node scripts/get-refresh-token.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.32.0",
@@ -15,7 +14,6 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "googleapis": "^144.0.0",
-    "mammoth": "^1.8.0",
-    "open": "^10.1.0"
+    "mammoth": "^1.8.0"
   }
 }
