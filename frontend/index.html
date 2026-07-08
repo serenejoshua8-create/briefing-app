@@ -116,6 +116,17 @@ button{font-family:inherit;cursor:pointer;}
 const el = id => document.getElementById(id);
 function apiBase(){ return el('apiBase').value.replace(/\/$/,''); }
 function headers(){ const h={'Content-Type':'application/json'}; const s=el('appSecret').value; if(s) h['x-app-secret']=s; return h; }
+
+// Remember apiBase/appSecret in this browser only (never in the page source),
+// so they don't need to be retyped on every visit.
+(function restoreSaved(){
+  const savedBase = localStorage.getItem('briefing_apiBase');
+  const savedSecret = localStorage.getItem('briefing_appSecret');
+  if(savedBase) el('apiBase').value = savedBase;
+  if(savedSecret) el('appSecret').value = savedSecret;
+})();
+el('apiBase').addEventListener('change', ()=> localStorage.setItem('briefing_apiBase', el('apiBase').value));
+el('appSecret').addEventListener('change', ()=> localStorage.setItem('briefing_appSecret', el('appSecret').value));
 async function api(path, opts={}){
   const res = await fetch(apiBase()+path, { ...opts, headers: headers() });
   const data = await res.json();
