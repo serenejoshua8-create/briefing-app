@@ -62,9 +62,21 @@ button{font-family:inherit;cursor:pointer;}
 .drive-item{display:flex;justify-content:space-between;padding:10px 14px;border:1px solid var(--line-dark);border-radius:4px;margin-bottom:8px;font-family:var(--font-mono);font-size:12px;background:var(--ink-2);}
 .drive-item button{font-size:10px;}
 .archive-body{background:var(--paper);color:var(--ink-text);padding:16px;border-radius:6px;font-size:14px;line-height:1.6;}
+.lock-overlay{position:fixed;inset:0;background:var(--ink);display:flex;align-items:center;justify-content:center;z-index:1000;}
+.lock-box{background:var(--paper);color:var(--ink-text);padding:32px;border-radius:6px;max-width:340px;width:90%;text-align:center;}
+.lock-box input{width:100%;padding:9px 12px;margin:14px 0;border-radius:4px;border:1px solid var(--line-light);font-family:var(--font-mono);font-size:13px;box-sizing:border-box;}
 </style>
 </head>
 <body>
+<div id="lockOverlay" class="lock-overlay">
+  <div class="lock-box">
+    <div class="mark">07<span>0</span>0 / 2100</div>
+    <p style="font-family:var(--font-mono);font-size:12px;margin-top:14px">Enter the access phrase to continue</p>
+    <input id="lockInput" type="password" placeholder="access phrase" autocomplete="off">
+    <button id="lockBtn" class="btn btn-primary" style="width:100%">Enter</button>
+    <div id="lockErr" class="err" style="display:none;margin-top:10px">Incorrect phrase.</div>
+  </div>
+</div>
 <div class="shell">
   <div class="topbar">
     <div class="mark">07<span>0</span>0 / 2100</div>
@@ -127,6 +139,31 @@ function headers(){ const h={'Content-Type':'application/json'}; const s=el('app
 })();
 el('apiBase').addEventListener('change', ()=> localStorage.setItem('briefing_apiBase', el('apiBase').value));
 el('appSecret').addEventListener('change', ()=> localStorage.setItem('briefing_appSecret', el('appSecret').value));
+
+// Lightweight access gate for sharing with test users — not real security
+// (visible to anyone reading this page's source), just a convenience barrier
+// so a casually-forwarded link doesn't work out of the box.
+(function accessGate(){
+  const ACCESS_PHRASE = 'forecast-6155';
+  const REAL_SECRET = 'ef4c72440f6b7fded093aefd9a30fe78bbc97eccaf640f9c';
+  const overlay = el('lockOverlay');
+  if(localStorage.getItem('briefing_unlocked') === '1'){
+    overlay.style.display = 'none';
+    return;
+  }
+  el('lockBtn').addEventListener('click', unlock);
+  el('lockInput').addEventListener('keydown', e => { if(e.key==='Enter') unlock(); });
+  function unlock(){
+    if(el('lockInput').value.trim() === ACCESS_PHRASE){
+      localStorage.setItem('briefing_unlocked', '1');
+      localStorage.setItem('briefing_appSecret', REAL_SECRET);
+      el('appSecret').value = REAL_SECRET;
+      overlay.style.display = 'none';
+    } else {
+      el('lockErr').style.display = 'block';
+    }
+  }
+})();
 async function api(path, opts={}){
   const res = await fetch(apiBase()+path, { ...opts, headers: headers() });
   const data = await res.json();
