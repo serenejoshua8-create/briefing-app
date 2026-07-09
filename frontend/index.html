@@ -229,9 +229,28 @@ function sheetHtml(record, view){
   </div>`;
 }
 
+// No server-side progress exists yet (single blocking request, no polling/SSE) —
+// this is a simulated status list + a real elapsed-time clock, not a true
+// reflection of backend state. Good enough to stop a 1-4 minute wait from
+// looking broken; a real step-tracking version is a later improvement.
+const RUN_STATUS_MESSAGES = [
+  'Searching approved sources…',
+  'Drafting summaries…',
+  'Cross-checking facts…',
+  'Reconciling verification passes…',
+  'Still working — this can take a few minutes…',
+];
 async function runBriefing(){
   el('runBtn').disabled = true;
-  el('briefingContent').innerHTML = '<div class="empty">Generating — 12 summaries, 5 analyses, cross-verified by Claude + Gemini…</div>';
+  const startedAt = Date.now();
+  let msgIndex = 0;
+  const renderStatus = () => {
+    const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+    el('briefingContent').innerHTML = `<div class="empty">${esc(RUN_STATUS_MESSAGES[msgIndex])}<br><span style="font-family:var(--font-mono);font-size:11px;opacity:.6">${elapsed}s elapsed · typically 1-4 min</span></div>`;
+  };
+  renderStatus();
+  const msgTimer = setInterval(() => { msgIndex = (msgIndex + 1) % RUN_STATUS_MESSAGES.length; }, 6000);
+  const tickTimer = setInterval(renderStatus, 1000);
   try{
     const record = await api('/api/briefing/run', { method:'POST', body: JSON.stringify({ session: state.session }) });
     state.current = record;
@@ -239,6 +258,8 @@ async function runBriefing(){
   }catch(e){
     el('briefingContent').innerHTML = `<div class="err"><b>Error</b> ${esc(e.message)}</div>`;
   }finally{
+    clearInterval(msgTimer);
+    clearInterval(tickTimer);
     el('runBtn').disabled = false;
   }
 }
