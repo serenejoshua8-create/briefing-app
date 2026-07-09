@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>0700 / 2100 — Briefing Room</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#10131B">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="0700/2100">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -65,6 +72,10 @@ button{font-family:inherit;cursor:pointer;}
 .lock-overlay{position:fixed;inset:0;background:var(--ink);display:flex;align-items:center;justify-content:center;z-index:1000;}
 .lock-box{background:var(--paper);color:var(--ink-text);padding:32px;border-radius:6px;max-width:340px;width:90%;text-align:center;}
 .lock-box input{width:100%;padding:9px 12px;margin:14px 0;border-radius:4px;border:1px solid var(--line-light);font-family:var(--font-mono);font-size:13px;box-sizing:border-box;}
+.install-banner{position:fixed;left:0;right:0;bottom:0;background:var(--paper);color:var(--ink-text);padding:14px 16px;display:none;align-items:center;justify-content:space-between;gap:12px;z-index:900;font-family:var(--font-mono);font-size:12px;box-shadow:0 -2px 12px rgba(0,0,0,.3);}
+.install-banner.show{display:flex;}
+.install-banner button{padding:8px 14px;border-radius:4px;background:var(--ink);color:var(--paper-text);border:none;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;}
+.install-banner .dismiss{background:none;color:var(--ink-text-dim);}
 </style>
 </head>
 <body>
@@ -122,6 +133,14 @@ button{font-family:inherit;cursor:pointer;}
     <div class="row"><button class="btn btn-primary" id="weeklyBtn">Generate Weekly Digest</button></div>
     <div id="weeklyContent"><div class="empty">No digest yet.</div></div>
   </section>
+</div>
+
+<div id="installBanner" class="install-banner">
+  <span id="installText">Add this to your home screen for one-tap access.</span>
+  <span>
+    <button id="installBtn">Install</button>
+    <button class="dismiss" id="installDismiss">Not now</button>
+  </span>
 </div>
 
 <script>
@@ -280,6 +299,47 @@ el('archSum').addEventListener('click',()=>{state.archView='summary';el('archSum
 el('archAna').addEventListener('click',()=>{state.archView='analysis';el('archAna').classList.add('active');el('archSum').classList.remove('active');renderArchive();});
 el('runBtn').addEventListener('click', runBriefing);
 el('weeklyBtn').addEventListener('click', runWeekly);
+
+// Add-to-home-screen: register the service worker (required by Chrome/Android
+// for installability), then show a custom "Install" banner instead of relying
+// on the browser's own mini-infobar. iOS Safari has no beforeinstallprompt
+// event at all, so it gets a manual instruction banner instead.
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').catch(()=>{});
+}
+(function installPrompt(){
+  const banner = el('installBanner');
+  const DISMISS_KEY = 'briefing_installDismissed';
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  if(isStandalone || localStorage.getItem(DISMISS_KEY) === '1') return;
+
+  let deferredPrompt = null;
+  window.addEventListener('beforeinstallprompt', e => {
+    e.preventDefault();
+    deferredPrompt = e;
+    banner.classList.add('show');
+  });
+  el('installBtn').addEventListener('click', async () => {
+    if(deferredPrompt){
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+      deferredPrompt = null;
+    }
+    banner.classList.remove('show');
+  });
+  el('installDismiss').addEventListener('click', () => {
+    banner.classList.remove('show');
+    localStorage.setItem(DISMISS_KEY, '1');
+  });
+
+  const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const isSafari = /safari/i.test(navigator.userAgent) && !/crios|fxios/i.test(navigator.userAgent);
+  if(isIOS && isSafari){
+    el('installText').textContent = 'Add to Home Screen: tap Share, then "Add to Home Screen".';
+    el('installBtn').style.display = 'none';
+    banner.classList.add('show');
+  }
+})();
 </script>
 </body>
 </html>

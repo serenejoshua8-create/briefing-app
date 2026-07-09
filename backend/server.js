@@ -6,10 +6,27 @@ import { GoogleGenAI } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
 import mammoth from 'mammoth';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 /* ============================================================
    Setup
    ============================================================ */
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const VERSION = fs.readFileSync(path.join(__dirname, 'VERSION'), 'utf8').trim();
+
+// Errors get appended to a local log file in addition to console output.
+// Note: Render's filesystem is ephemeral — this file resets on every
+// redeploy/restart, so it's useful for debugging the current running
+// instance, not as a durable audit log.
+const LOG_FILE = path.join(__dirname, 'error.log');
+function logError(context, err) {
+  const line = `[${new Date().toISOString()}] ${context}: ${err?.stack || err?.message || String(err)}\n`;
+  console.error(line);
+  try { fs.appendFileSync(LOG_FILE, line); } catch { /* best-effort only */ }
+}
+
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
 app.use(express.json({ limit: '2mb' }));
@@ -428,7 +445,7 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
 
     res.json(record);
   } catch (e) {
-    console.error(e);
+    logError('POST /api/briefing/run', e);
     res.status(500).json({ error: e.message || String(e) });
   }
 });
@@ -492,7 +509,7 @@ Respond with ONLY valid JSON: {"narrative":"...","topStories":[{"title":"...","s
     await supabase.from('weekly_digests').upsert(record, { onConflict: 'week_start' });
     res.json(record);
   } catch (e) {
-    console.error(e);
+    logError('POST /api/weekly/run', e);
     res.status(500).json({ error: e.message || String(e) });
   }
 });
@@ -514,7 +531,7 @@ app.get('/api/drive/archive', async (req, res) => {
     });
     res.json(list.data.files || []);
   } catch (e) {
-    console.error(e);
+    logError('GET /api/drive/archive', e);
     res.status(500).json({ error: e.message || String(e) });
   }
 });
@@ -535,15 +552,28 @@ app.get('/api/drive/file/:fileId', async (req, res) => {
     const { value: html } = await mammoth.convertToHtml({ buffer: Buffer.from(file.data) });
     res.json({ name: meta.data.name, html });
   } catch (e) {
-    console.error(e);
+    logError('GET /api/drive/file/:fileId', e);
     res.status(500).json({ error: e.message || String(e) });
   }
 });
 
 /* ============================================================
-   Health check + start
+   Health check, version, logs + start
    ============================================================ */
-app.get('/', (req, res) => res.json({ ok: true, service: 'briefing-backend' }));
+app.get('/', (req, res) => res.json({ ok: true, service: 'briefing-backend', version: VERSION }));
+
+// Tail the local error log — useful since Render's dashboard log view can be
+// awkward to search; this file resets on every redeploy/restart though.
+app.get('/api/logs', requireSecret, (req, res) => {
+  try {
+    const content = fs.existsSync(LOG_FILE) ? fs.readFileSync(LOG_FILE, 'utf8') : '';
+    const lines = content.split('\n').filter(Boolean);
+    const tail = lines.slice(-200);
+    res.json({ lines: tail.length, log: tail.join('\n') });
+  } catch (e) {
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Backend listening on :${PORT}`));
+app.listen(PORT, () => console.log(`Backend v${VERSION} listening on :${PORT}`));
