@@ -283,7 +283,7 @@ Use "pass" or "drop" only (no fixes from this pass — Claude's fixes come from 
   const res = await genai.models.generateContent({
     model: GEMINI_MODEL,
     contents: prompt,
-    config: { tools: [{ googleSearch: {} }] },
+    config: { tools: [{ googleSearch: {} }], maxOutputTokens: GEMINI_DAILY_MAX_TOKENS },
   });
   const text = res.text || '';
   try {
@@ -339,7 +339,7 @@ Never use straight double-quotes inside string values.`;
   const res = await genai.models.generateContent({
     model: GEMINI_MODEL,
     contents: prompt,
-    config: { tools: [{ googleSearch: {} }] },
+    config: { tools: [{ googleSearch: {} }], maxOutputTokens: GEMINI_DAILY_MAX_TOKENS },
   });
   const text = res.text || '';
   try {
@@ -482,6 +482,7 @@ Respond with ONLY valid JSON: {"narrative":"...","topStories":[{"title":"...","s
       const resp = await genai.models.generateContent({
         model: GEMINI_MODEL,
         contents: `${prompt}\n\n${payload}`,
+        config: { maxOutputTokens: GEMINI_DAILY_MAX_TOKENS },
       });
       text = resp.text || '';
     }
