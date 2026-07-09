@@ -14,7 +14,8 @@ const app = express();
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
 app.use(express.json({ limit: '2mb' }));
 
-const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+const HAS_ANTHROPIC = !!process.env.ANTHROPIC_API_KEY;
+const anthropic = HAS_ANTHROPIC ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
 const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
@@ -26,10 +27,14 @@ const drive = google.drive({ version: 'v3', auth: driveAuth });
 
 const CLAUDE_MODEL = 'claude-sonnet-4-6';
 const GEMINI_MODEL = 'gemini-2.5-flash';
-const TOTAL_TOPICS = 12;
-const DETAILED_TOPICS = 5;
-const MIN_PAYWALLED = 3;
+const TOTAL_TOPICS = 5;
+const DETAILED_TOPICS = 3;
+const MIN_PAYWALLED = 1;
 const DAILY_MAX_TOKENS = 9000;
+// Gemini 2.5 Flash's internal "thinking" tokens count against maxOutputTokens,
+// so it needs a much larger budget than Claude to finish a 12-topic dispatch
+// without getting cut off mid-JSON.
+const GEMINI_DAILY_MAX_TOKENS = 32768;
 
 /* ============================================================
    Auth guard — require a shared secret header on mutating routes.
@@ -104,10 +109,28 @@ const ALL_TOPICS = TOPIC_GROUPS.flatMap(g => g.topics);
    JSON extraction (Claude sometimes wraps JSON in prose/fences)
    ============================================================ */
 function extractJSON(text) {
-  const s = text.indexOf('{'), e = text.lastIndexOf('}');
-  if (s === -1 || e === -1 || e < s) throw new Error('No JSON found in model response.');
-  const candidate = text.slice(s, e + 1);
-  return JSON.parse(candidate);
+  const start = text.indexOf('{');
+  if (start === -1) throw new Error('No JSON found in model response.');
+  // Scan for the first *balanced* top-level object rather than slicing from the
+  // first '{' to the last '}' — some models repeat the full JSON object twice
+  // in one response, which the naive slice would concatenate into invalid JSON.
+  let depth = 0, inString = false, escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return JSON.parse(text.slice(start, i + 1));
+    }
+  }
+  throw new Error('No complete JSON object found in model response.');
 }
 
 /* ============================================================
@@ -126,8 +149,6 @@ function buildDailyPrompt(config, dateStr, session) {
 
   return `You are a senior geopolitical and economic intelligence analyst preparing a twice-daily briefing for a single expert reader in Delhi, India.
 
-Use web_search to find the most significant recent developments. Draw ONLY from these ${SOURCES.length} sources: ${sourceList}.
-
 Today is ${dateStr} (IST). This is the ${session === 'AM' ? 'MORNING (0700 IST)' : 'EVENING (2100 IST)'} briefing.
 
 The reader has selected ONLY these topics:
@@ -135,11 +156,16 @@ ${topicLines}${extraLine}
 
 Cover ONLY developments within these topics.
 
-=== SOURCING — read carefully ===
-Each "point" is a separately-sourced quote. Points within one topic may come from different articles/outlets.
+=== SOURCING — hard requirement, read carefully ===
+You may cite ONLY these exact ${SOURCES.length} domains — no exceptions, no other outlets, no blogs, no aggregators, no think-tank sites, no analyst commentary sites:
+${sourceList}
+
+Any point citing a domain outside this exact list will be discarded automatically before publication, so it is worthless to include one. When you search, prefer queries scoped to these domains directly (e.g. "site:reuters.com <topic>", "site:apnews.com <topic>") rather than an open web search, and only fall back to a broader search to discover the story before finding the matching article specifically on one of these ${SOURCES.length} domains.
+
+Each "point" is a separately-sourced quote. Points within one topic may come from different articles/outlets, but every single one must be from the approved list above.
 For every point provide: "quote" (10-30 word VERBATIM excerpt copied exactly from the article), "sourceName", and "url".
-The "url" MUST be the exact article URL you opened via web_search — NEVER a homepage or section page (e.g. https://www.wsj.com/ is FORBIDDEN). It must contain a real article path/slug.
-If you cannot produce the real article URL, DROP that point rather than guessing.
+The "url" MUST be the exact article URL on one of the approved domains — NEVER a homepage or section page (e.g. https://www.wsj.com/ is FORBIDDEN). It must contain a real article path/slug.
+If you cannot find a matching article on an approved domain, DROP that point rather than citing an unapproved source or guessing a URL.
 Do not reuse one URL for quotes from different articles.
 
 === STRUCTURE ===
@@ -158,15 +184,30 @@ Rules:
 }
 
 async function generateDispatch(config, dateStr, session) {
-  const res = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: DAILY_MAX_TOKENS,
-    system: buildDailyPrompt(config, dateStr, session),
-    messages: [{ role: 'user', content: `Prepare the ${session} briefing for ${dateStr}.` }],
-    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+  const systemPrompt = buildDailyPrompt(config, dateStr, session);
+
+  if (HAS_ANTHROPIC) {
+    const res = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: DAILY_MAX_TOKENS,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: `Prepare the ${session} briefing for ${dateStr}.` }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+    });
+    const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    const partial = res.stop_reason === 'max_tokens';
+    const parsed = extractJSON(text);
+    return { topics: parsed.topics || [], partial };
+  }
+
+  // No Anthropic key configured — fall back to Gemini for generation too.
+  const res = await genai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: `${systemPrompt}\n\nPrepare the ${session} briefing for ${dateStr}.`,
+    config: { tools: [{ googleSearch: {} }], maxOutputTokens: GEMINI_DAILY_MAX_TOKENS },
   });
-  const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  const partial = res.stop_reason === 'max_tokens';
+  const text = res.text || '';
+  const partial = res.candidates?.[0]?.finishReason === 'MAX_TOKENS';
   const parsed = extractJSON(text);
   return { topics: parsed.topics || [], partial };
 }
@@ -195,12 +236,25 @@ async function urlIsReachable(url) {
     return false; // network errors / blocks don't necessarily mean the link is fake — treat as "unknown", not fatal
   }
 }
+// Enforce the "draw only from these sources" instruction in code — models
+// (Gemini especially, observed empirically) don't reliably follow it as a
+// prompt-only constraint.
+const APPROVED_HOSTNAMES = SOURCES.map(s => s.url.toLowerCase());
+function isApprovedSourceUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    return APPROVED_HOSTNAMES.some(h => host === h || host.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
 async function sanitizePoints(topics) {
   for (const t of topics) {
     if (!Array.isArray(t.points)) { t.points = []; continue; }
     const kept = [];
     for (const p of t.points) {
       if (!p.url || !looksLikeArticleUrl(p.url)) continue; // drop homepage/fabricated-looking links outright
+      if (!isApprovedSourceUrl(p.url)) continue; // drop points citing outlets outside the approved source list
       kept.push(p);
     }
     t.points = kept;
@@ -268,21 +322,52 @@ Never use straight double-quotes inside string values.`;
 }
 
 /* ============================================================
+   Gemini: second independent verification pass, used only when no
+   Anthropic key is configured. Mirrors verifyWithClaude's job (can
+   suggest fixes, not just pass/drop) but stays within Gemini's free tier.
+   ============================================================ */
+async function verifyWithGeminiFixer(topics, dateStr, session) {
+  const prompt = `You are a strict fact-checking editor verifying a geopolitical briefing before publication.
+Briefing date: ${dateStr} (IST). Session: ${session}.
+Topics (JSON): ${JSON.stringify(topics.map((t, i) => ({ index: i, thread: t.thread, headline: t.headline, topicId: t.topicId, storyDate: t.storyDate, points: t.points })))}
+
+Use Google Search to independently verify recency, accuracy, and topic relevance for each topic.
+Respond with ONLY valid JSON, no markdown fences:
+{"results":[{"index":0,"verdict":"pass"},{"index":1,"verdict":"fix","corrected":{...full corrected topic, same schema...}},{"index":2,"verdict":"drop","reason":"..."}]}
+Never use straight double-quotes inside string values.`;
+
+  const res = await genai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: prompt,
+    config: { tools: [{ googleSearch: {} }] },
+  });
+  const text = res.text || '';
+  try {
+    return extractJSON(text).results || [];
+  } catch {
+    return [];
+  }
+}
+
+/* ============================================================
    Reconciliation — conservative merge of both verifiers.
-   Either model saying "drop" wins. A "fix" from Claude is applied.
+   Either model saying "drop" wins. A "fix" from the second pass is applied.
+   With an Anthropic key: Gemini + Claude, two independent providers.
+   Without one: two independent Gemini calls (weaker — same provider twice —
+   but still catches issues a single pass would miss).
    ============================================================ */
 async function verifyDispatch(topics, dateStr, session) {
-  const [geminiResults, claudeResults] = await Promise.all([
+  const [passA, passB] = await Promise.all([
     verifyWithGemini(topics, dateStr, session),
-    verifyWithClaude(topics, dateStr, session),
+    HAS_ANTHROPIC ? verifyWithClaude(topics, dateStr, session) : verifyWithGeminiFixer(topics, dateStr, session),
   ]);
   let fixed = 0, dropped = 0;
   const next = [];
   topics.forEach((t, i) => {
-    const g = geminiResults.find(r => r.index === i);
-    const c = claudeResults.find(r => r.index === i);
-    if ((g && g.verdict === 'drop') || (c && c.verdict === 'drop')) { dropped++; return; }
-    if (c && c.verdict === 'fix' && c.corrected && c.corrected.headline) { next.push(c.corrected); fixed++; return; }
+    const a = passA.find(r => r.index === i);
+    const b = passB.find(r => r.index === i);
+    if ((a && a.verdict === 'drop') || (b && b.verdict === 'drop')) { dropped++; return; }
+    if (b && b.verdict === 'fix' && b.corrected && b.corrected.headline) { next.push(b.corrected); fixed++; return; }
     next.push(t);
   });
   return { topics: next, fixed, dropped, clean: fixed === 0 && dropped === 0 };
@@ -384,12 +469,22 @@ app.post('/api/weekly/run', requireSecret, async (req, res) => {
     const prompt = `Synthesise one week of geopolitical briefings into a digest.
 Respond with ONLY valid JSON: {"narrative":"...","topStories":[{"title":"...","summary":"..."}]}
 "narrative" under 80 words. Exactly 5 topStories, each summary under 30 words. Never use straight double-quotes inside string values.`;
+    const payload = JSON.stringify({ weekStart, weekEnd, briefings: compact });
 
-    const resp = await anthropic.messages.create({
-      model: CLAUDE_MODEL, max_tokens: 900, system: prompt,
-      messages: [{ role: 'user', content: JSON.stringify({ weekStart, weekEnd, briefings: compact }) }],
-    });
-    const text = resp.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    let text;
+    if (HAS_ANTHROPIC) {
+      const resp = await anthropic.messages.create({
+        model: CLAUDE_MODEL, max_tokens: 900, system: prompt,
+        messages: [{ role: 'user', content: payload }],
+      });
+      text = resp.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    } else {
+      const resp = await genai.models.generateContent({
+        model: GEMINI_MODEL,
+        contents: `${prompt}\n\n${payload}`,
+      });
+      text = resp.text || '';
+    }
     const parsed = extractJSON(text);
 
     const record = { week_start: weekStart, week_end: weekEnd, generated_at: new Date().toISOString(), narrative: parsed.narrative, top_stories: parsed.topStories || [] };
