@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630">
+  <defs>
+    <clipPath id="circleClip"><circle cx="1000" cy="150" r="90"/></clipPath>
+  </defs>
+  <rect width="1200" height="630" fill="#10131B"/>
+  <g clip-path="url(#circleClip)">
+    <rect x="910" y="60" width="180" height="90" fill="#C98A2B"/>
+    <rect x="910" y="150" width="180" height="90" fill="#7C6CC0"/>
+  </g>
+  <circle cx="1000" cy="150" r="34" fill="#F1EBDD"/>
+
+  <text x="80" y="230" font-family="Georgia, 'Times New Roman', serif" font-size="88" font-weight="700" fill="#ECE6D6">07<tspan fill="#C98A2B">0</tspan>0 / 2100</text>
+
+  <text x="80" y="320" font-family="'Courier New', monospace" font-size="20" letter-spacing="2" fill="#C98A2B">DAILY BRIEFING APP FOR ARUN SINGH</text>
+
+  <text x="80" y="400" font-family="Georgia, 'Times New Roman', serif" font-size="42" fill="#ECE6D6">Geopolitical &amp; economic briefs,</text>
+  <text x="80" y="452" font-family="Georgia, 'Times New Roman', serif" font-size="42" fill="#ECE6D6">delivered twice daily.</text>
+
+  <text x="80" y="540" font-family="'Courier New', monospace" font-size="26" fill="rgba(236,230,214,.7)">MORNING · 07:00   —   EVENING · 21:00</text>
+
+  <line x1="80" y1="570" x2="1120" y2="570" stroke="rgba(236,230,214,.15)" stroke-width="2"/>
+</svg>
