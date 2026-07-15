@@ -33,6 +33,14 @@ app.use(express.json({ limit: '2mb' }));
 
 const HAS_ANTHROPIC = !!process.env.ANTHROPIC_API_KEY;
 const anthropic = HAS_ANTHROPIC ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
+// Dispatch generation always uses Gemini (free), even when an Anthropic key
+// is configured. Confirmed via live testing: Claude's web_search-driven
+// generation for a 12-topic dispatch realistically costs $60-180/month at
+// 2 runs/day (each search round-trip resends the whole accumulated
+// conversation as input tokens) — incompatible with a ~$5/month budget.
+// Claude still powers the occasional, cheap, search-free weekly digest.
+// Flip this back to true if the budget constraint changes.
+const USE_CLAUDE_FOR_GENERATION = false;
 const genai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
@@ -44,9 +52,9 @@ const drive = google.drive({ version: 'v3', auth: driveAuth });
 
 const CLAUDE_MODEL = 'claude-sonnet-5';
 const GEMINI_MODEL = 'gemini-2.5-flash';
-const TOTAL_TOPICS = 12;
-const DETAILED_TOPICS = 5;
-const MIN_PAYWALLED = 3;
+const TOTAL_TOPICS = 5;
+const DETAILED_TOPICS = 3;
+const MIN_PAYWALLED = 1;
 // 9000 was the original value but truncated mid-JSON on a real 12-topic +
 // 5-analysis run (confirmed via the "partial" flag) — a full dispatch needs
 // more headroom than that.
@@ -206,7 +214,7 @@ Rules:
 async function generateDispatch(config, dateStr, session) {
   const systemPrompt = buildDailyPrompt(config, dateStr, session);
 
-  if (HAS_ANTHROPIC) {
+  if (HAS_ANTHROPIC && USE_CLAUDE_FOR_GENERATION) {
     const res = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: DAILY_MAX_TOKENS,
@@ -319,37 +327,13 @@ Use "pass" or "drop" only (no fixes from this pass — Claude's fixes come from 
 }
 
 /* ============================================================
-   Claude: self-verification pass (separate call, re-searches independently)
-   ============================================================ */
-async function verifyWithClaude(topics, dateStr, session) {
-  const prompt = `You are a strict fact-checking editor verifying a geopolitical briefing before publication.
-Briefing date: ${dateStr} (IST). Session: ${session}.
-Topics (JSON): ${JSON.stringify(topics.map((t, i) => ({ index: i, thread: t.thread, headline: t.headline, topicId: t.topicId, storyDate: t.storyDate, points: t.points })))}
-
-Use web_search to independently verify recency, accuracy, and topic relevance for each topic.
-Respond with ONLY valid JSON, no markdown fences:
-{"results":[{"index":0,"verdict":"pass"},{"index":1,"verdict":"fix","corrected":{...full corrected topic, same schema...}},{"index":2,"verdict":"drop","reason":"..."}]}
-Never use straight double-quotes inside string values.`;
-
-  const res = await anthropic.messages.create({
-    model: CLAUDE_MODEL,
-    max_tokens: 8000,
-    system: prompt,
-    messages: [{ role: 'user', content: 'Verify the topics now.' }],
-    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }],
-  });
-  const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
-  try {
-    return extractJSON(text).results || [];
-  } catch {
-    return [];
-  }
-}
-
-/* ============================================================
-   Gemini: second independent verification pass, used only when no
-   Anthropic key is configured. Mirrors verifyWithClaude's job (can
-   suggest fixes, not just pass/drop) but stays within Gemini's free tier.
+   Gemini: second independent verification pass — can suggest fixes, not
+   just pass/drop. Verification always runs on Gemini (free tier) even
+   when Claude generates the dispatch: Claude's web_search tool bills per
+   search plus the accumulated-conversation input tokens each search
+   round-trip resends, so adding a second Claude call here would roughly
+   double Claude spend per run for comparatively little verification
+   benefit over Gemini's own independent check.
    ============================================================ */
 async function verifyWithGeminiFixer(topics, dateStr, session) {
   const prompt = `You are a strict fact-checking editor verifying a geopolitical briefing before publication.
@@ -376,15 +360,14 @@ Never use straight double-quotes inside string values.`;
 
 /* ============================================================
    Reconciliation — conservative merge of both verifiers.
-   Either model saying "drop" wins. A "fix" from the second pass is applied.
-   With an Anthropic key: Gemini + Claude, two independent providers.
-   Without one: two independent Gemini calls (weaker — same provider twice —
-   but still catches issues a single pass would miss).
+   Either verifier saying "drop" wins. A "fix" from the second pass is
+   applied. Both passes run on Gemini's free tier regardless of whether
+   Claude generated the dispatch — see the comment above verifyWithGemini.
    ============================================================ */
 async function verifyDispatch(topics, dateStr, session) {
   const [passA, passB] = await Promise.all([
     verifyWithGemini(topics, dateStr, session),
-    HAS_ANTHROPIC ? verifyWithClaude(topics, dateStr, session) : verifyWithGeminiFixer(topics, dateStr, session),
+    verifyWithGeminiFixer(topics, dateStr, session),
   ]);
   let fixed = 0, dropped = 0;
   const next = [];
