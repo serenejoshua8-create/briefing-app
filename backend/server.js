@@ -6,6 +6,8 @@ import { GoogleGenAI } from '@google/genai';
 import { createClient } from '@supabase/supabase-js';
 import { google } from 'googleapis';
 import mammoth from 'mammoth';
+import * as cheerio from 'cheerio';
+import { PDFParse } from 'pdf-parse';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -29,7 +31,8 @@ function logError(context, err) {
 
 const app = express();
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
-app.use(express.json({ limit: '2mb' }));
+// 20mb to leave room for a few PDF uploads sent as base64 (~33% larger than raw)
+app.use(express.json({ limit: '20mb' }));
 
 const HAS_ANTHROPIC = !!process.env.ANTHROPIC_API_KEY;
 const anthropic = HAS_ANTHROPIC ? new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY }) : null;
@@ -52,9 +55,9 @@ const drive = google.drive({ version: 'v3', auth: driveAuth });
 
 const CLAUDE_MODEL = 'claude-sonnet-5';
 const GEMINI_MODEL = 'gemini-2.5-flash';
-const TOTAL_TOPICS = 5;
-const DETAILED_TOPICS = 3;
-const MIN_PAYWALLED = 1;
+const TOTAL_TOPICS = 12;
+const DETAILED_TOPICS = 5;
+const MIN_PAYWALLED = 3;
 // 9000 was the original value but truncated mid-JSON on a real 12-topic +
 // 5-analysis run (confirmed via the "partial" flag) — a full dispatch needs
 // more headroom than that.
@@ -284,15 +287,217 @@ function isApprovedSourceUrl(url) {
 // Shared by the initial pass and by reconciliation's "fix" path below —
 // a corrected topic from a verifier is just as capable of citing a fake or
 // off-list URL as the original generation, so it must pass the same checks.
-function sanitizeTopicPoints(t) {
+function sanitizeTopicPoints(t, { enforceApprovedDomains = true, validUrls = null } = {}) {
   if (!Array.isArray(t.points)) { t.points = []; return t; }
-  t.points = t.points.filter(p =>
-    p.url && looksLikeArticleUrl(p.url) && isApprovedSourceUrl(p.url)
-  );
+  t.points = t.points.filter(p => {
+    if (!p.quote || !p.sourceName) return false;
+    if (!p.url) return !enforceApprovedDomains; // no-URL points (e.g. from an uploaded PDF) only allowed outside the strict autonomous-search path
+    // Source-driven mode has an exact set of known-good URLs — require an
+    // exact match rather than just a shape check, since a model can garble
+    // a character while copying a URL (observed: "laucnh" for "launches").
+    if (validUrls) return validUrls.has(p.url);
+    if (!looksLikeArticleUrl(p.url)) return false;
+    return !enforceApprovedDomains || isApprovedSourceUrl(p.url);
+  });
   return t;
 }
-async function sanitizePoints(topics) {
-  return topics.map(sanitizeTopicPoints).filter(t => t.points.length > 0);
+async function sanitizePoints(topics, opts) {
+  return topics.map(t => sanitizeTopicPoints(t, opts)).filter(t => t.points.length > 0);
+}
+
+/* ============================================================
+   Source-driven generation — the user supplies paywalled article
+   URLs/PDFs and government site URLs directly, instead of relying on
+   autonomous web search. This removes Claude's web_search tool (and its
+   per-search fee + runaway conversation growth) entirely: generation
+   becomes a single bounded summarization call over the supplied text.
+   ============================================================ */
+const MAX_SOURCE_CHARS = 6000; // per-source cap — keeps total token usage predictable regardless of how long a page/PDF is
+const MAX_GOV_ITEMS_PER_SITE = 6;
+const GOV_RECENCY_HOURS = 72;
+
+function truncateText(text, max) {
+  return text.length > max ? text.slice(0, max) + '…' : text;
+}
+
+async function fetchHtml(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; briefing-app/1.0; +source-fetcher)' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${url}`);
+    return await res.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function extractReadableText(html) {
+  const $ = cheerio.load(html);
+  $('script, style, nav, header, footer, noscript, iframe, svg').remove();
+  const title = $('title').first().text().trim();
+  const articleText = $('article').text().trim();
+  const bodyText = (articleText || $('body').text() || '').replace(/\s+/g, ' ').trim();
+  return { title, text: bodyText };
+}
+
+async function fetchArticleText(url) {
+  try {
+    const html = await fetchHtml(url);
+    const { title, text } = extractReadableText(html);
+    const hostname = new URL(url).hostname.replace(/^www\./, '');
+    return { sourceName: title || hostname, url, text: truncateText(text, MAX_SOURCE_CHARS) };
+  } catch (e) {
+    logError(`fetchArticleText:${url}`, e);
+    return null;
+  }
+}
+
+async function extractPdfText(base64, label) {
+  const parser = new PDFParse({ data: Buffer.from(base64, 'base64') });
+  try {
+    const result = await parser.getText();
+    return { sourceName: label || 'Uploaded PDF', url: null, text: truncateText(result.text.replace(/\s+/g, ' ').trim(), MAX_SOURCE_CHARS) };
+  } finally {
+    await parser.destroy();
+  }
+}
+
+// Heuristic: scan a government listing page for links whose nearby text
+// contains a recognizable date within the last GOV_RECENCY_HOURS, then
+// fetch each matching page's text. Government site markup varies widely
+// (and some are JS-rendered SPAs this plain fetch can't see), so this is
+// best-effort — it won't work equally well on every site.
+const DATE_PATTERN = /\b\d{4}-\d{2}-\d{2}\b|\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},?\s+\d{4}\b|\b\d{1,2}\s+(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b/i;
+
+async function fetchGovRecentItems(baseUrl, sinceHours = GOV_RECENCY_HOURS) {
+  const results = [];
+  try {
+    const html = await fetchHtml(baseUrl);
+    const $ = cheerio.load(html);
+    const cutoff = Date.now() - sinceHours * 3600 * 1000;
+    const candidates = [];
+    $('a[href]').each((_, el) => {
+      const href = $(el).attr('href');
+      if (!href) return;
+      let absoluteUrl;
+      try { absoluteUrl = new URL(href, baseUrl).toString(); } catch { return; }
+      const context = ($(el).closest('li, article, div').text() || $(el).text() || '').slice(0, 300);
+      const match = context.match(DATE_PATTERN);
+      if (!match) return;
+      const date = new Date(match[0]);
+      if (isNaN(date.getTime()) || date.getTime() < cutoff) return;
+      candidates.push({ url: absoluteUrl, date });
+    });
+    const seen = new Set();
+    const deduped = candidates
+      .sort((a, b) => b.date - a.date)
+      .filter(c => (seen.has(c.url) ? false : (seen.add(c.url), true)))
+      .slice(0, MAX_GOV_ITEMS_PER_SITE);
+    for (const c of deduped) {
+      const article = await fetchArticleText(c.url);
+      if (article) results.push(article);
+    }
+  } catch (e) {
+    logError(`fetchGovRecentItems:${baseUrl}`, e);
+  }
+  return results;
+}
+
+async function assembleSourceMaterial(sources) {
+  const items = [];
+  for (const url of sources.urls || []) {
+    const article = await fetchArticleText(url);
+    if (article) items.push(article);
+  }
+  for (const govUrl of sources.govUrls || []) {
+    items.push(...await fetchGovRecentItems(govUrl));
+  }
+  for (const pdf of sources.pdfs || []) {
+    try {
+      const extracted = await extractPdfText(pdf.base64, pdf.sourceName || pdf.filename);
+      if (pdf.sourceUrl) extracted.url = pdf.sourceUrl;
+      items.push(extracted);
+    } catch (e) {
+      logError(`extractPdfText:${pdf.filename || 'unknown'}`, e);
+    }
+  }
+  const materialBlock = items
+    .map(it => `--- SOURCE: ${it.sourceName}${it.url ? ` (${it.url})` : ''} ---\n${it.text}`)
+    .join('\n\n');
+  return { items, materialBlock };
+}
+
+function buildSourceDrivenPrompt(config, dateStr, session, materialBlock) {
+  const chosen = ALL_TOPICS.filter(t => config.topics.includes(t.id));
+  const extras = (config.extraTopics || '').trim();
+  const idList = chosen.map(t => t.id).join('|') + (extras ? '|extra' : '');
+  const topicLines = chosen.map(t => `  - ${t.label}`).join('\n');
+  const extraLine = extras
+    ? `\n\nAdditional reader-specified topics (equal priority):\n  - ${extras.split(',').map(s => s.trim()).filter(Boolean).join('\n  - ')}`
+    : '';
+
+  return `You are a senior geopolitical and economic intelligence analyst preparing a twice-daily briefing for a single expert reader in Delhi, India.
+
+Today is ${dateStr} (IST). This is the ${session === 'AM' ? 'MORNING (0700 IST)' : 'EVENING (2100 IST)'} briefing.
+
+The reader has selected ONLY these topics:
+${topicLines}${extraLine}
+
+=== SOURCE MATERIAL — this is your ONLY source of information ===
+Do NOT use any outside knowledge or web search. Base every fact and quote strictly on the material below. If the material doesn't support ${TOTAL_TOPICS} distinct topics, return fewer rather than inventing anything.
+
+${materialBlock}
+
+=== SOURCING RULES ===
+Each "point" is a quote drawn verbatim (10-30 words) from the material above, tagged with the "sourceName" and "url" it came from — copy the exact url given for that source; if a source has no url listed, omit the "url" field for that point entirely, never invent one.
+Do not reuse one quote for multiple points. Do not fabricate a quote not present in the material.
+
+=== STRUCTURE ===
+LAYER 1 (up to ${TOTAL_TOPICS}): the most significant developments in the material, ranked. Each gets: "thread" (2-4 word tag), "headline" (<12 words), "topicId", "storyDate" (ISO date, from the material if stated else ${dateStr}), "points" (array of up to 3 sourced quotes as above).
+LAYER 2 (top ${DETAILED_TOPICS} of those): mark "detailed":true and add "analysis": {whatHappened, rightWrong, delta, forecast, outlook, confidence ("High"|"Medium"|"Low"), confidencePct (0-100), confidenceReason}. The rest get "detailed":false, no analysis.
+
+Respond with ONLY valid JSON, no markdown fences, no commentary:
+{"topics":[{"thread":"...","headline":"...","topicId":"<one of: ${idList}>","storyDate":"YYYY-MM-DD","detailed":true,"points":[{"quote":"...","sourceName":"...","url":"..."}],"analysis":{...only if detailed:true...}}]}
+
+Rules:
+- CRITICAL: never use a straight double-quote (") inside a string value — use single quotes instead. Output must be valid JSON.
+- Headline under 12 words, plain, specific.`;
+}
+
+async function generateDispatchFromSources(config, dateStr, session, materialBlock) {
+  const systemPrompt = buildSourceDrivenPrompt(config, dateStr, session, materialBlock);
+  const userMsg = `Prepare the ${session} briefing for ${dateStr} from the supplied source material.`;
+
+  // No tools/search in either branch — a plain summarization call over
+  // supplied text, not an autonomous search loop. Cost is bounded by input
+  // material size, not by an open-ended search budget.
+  if (HAS_ANTHROPIC) {
+    const res = await anthropic.messages.create({
+      model: CLAUDE_MODEL,
+      max_tokens: DAILY_MAX_TOKENS,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userMsg }],
+    });
+    const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
+    const partial = res.stop_reason === 'max_tokens';
+    const parsed = extractJSON(text);
+    return { topics: parsed.topics || [], partial };
+  }
+
+  const res = await genai.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: `${systemPrompt}\n\n${userMsg}`,
+    config: { maxOutputTokens: GEMINI_DAILY_MAX_TOKENS },
+  });
+  const text = res.text || '';
+  const partial = res.candidates?.[0]?.finishReason === 'MAX_TOKENS';
+  const parsed = extractJSON(text);
+  return { topics: parsed.topics || [], partial };
 }
 
 /* ============================================================
@@ -364,7 +569,7 @@ Never use straight double-quotes inside string values.`;
    applied. Both passes run on Gemini's free tier regardless of whether
    Claude generated the dispatch — see the comment above verifyWithGemini.
    ============================================================ */
-async function verifyDispatch(topics, dateStr, session) {
+async function verifyDispatch(topics, dateStr, session, sanitizeOpts) {
   const [passA, passB] = await Promise.all([
     verifyWithGemini(topics, dateStr, session),
     verifyWithGeminiFixer(topics, dateStr, session),
@@ -376,9 +581,9 @@ async function verifyDispatch(topics, dateStr, session) {
     const b = passB.find(r => r.index === i);
     if ((a && a.verdict === 'drop') || (b && b.verdict === 'drop')) { dropped++; return; }
     if (b && b.verdict === 'fix' && b.corrected && b.corrected.headline) {
-      const corrected = sanitizeTopicPoints(b.corrected);
+      const corrected = sanitizeTopicPoints(b.corrected, sanitizeOpts);
       if (corrected.points.length > 0) { next.push(corrected); fixed++; }
-      else { dropped++; } // the "fix" cited no valid approved-source URLs — treat as a drop, not a silent pass-through
+      else { dropped++; } // the "fix" cited no valid sources — treat as a drop, not a silent pass-through
       return;
     }
     next.push(t);
@@ -408,7 +613,7 @@ app.post('/api/config', requireSecret, async (req, res) => {
    Routes — briefing generation & retrieval
    ============================================================ */
 app.post('/api/briefing/run', requireSecret, async (req, res) => {
-  const { session } = req.body;
+  const { session, sources } = req.body;
   if (session !== 'AM' && session !== 'PM') return res.status(400).json({ error: 'session must be AM or PM' });
 
   try {
@@ -420,11 +625,27 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
 
     const dateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
 
-    const { topics: rawTopics, partial } = await generateDispatch(config, dateStr, session);
-    if (!rawTopics.length) return res.status(502).json({ error: 'Claude returned no topics.' });
+    const hasSuppliedSources = sources && (
+      (sources.urls && sources.urls.length) ||
+      (sources.govUrls && sources.govUrls.length) ||
+      (sources.pdfs && sources.pdfs.length)
+    );
 
-    const sanitized = await sanitizePoints(rawTopics);
-    const verified = await verifyDispatch(sanitized, dateStr, session);
+    let rawTopics, partial, sanitized, sanitizeOpts;
+    if (hasSuppliedSources) {
+      const { items, materialBlock } = await assembleSourceMaterial(sources);
+      if (!materialBlock.trim()) return res.status(400).json({ error: 'Could not extract any usable text from the supplied sources.' });
+      sanitizeOpts = { enforceApprovedDomains: false, validUrls: new Set(items.filter(it => it.url).map(it => it.url)) };
+      ({ topics: rawTopics, partial } = await generateDispatchFromSources(config, dateStr, session, materialBlock));
+      if (!rawTopics.length) return res.status(502).json({ error: 'No topics could be drawn from the supplied sources.' });
+      sanitized = await sanitizePoints(rawTopics, sanitizeOpts);
+    } else {
+      ({ topics: rawTopics, partial } = await generateDispatch(config, dateStr, session));
+      if (!rawTopics.length) return res.status(502).json({ error: 'Model returned no topics.' });
+      sanitized = await sanitizePoints(rawTopics);
+    }
+
+    const verified = await verifyDispatch(sanitized, dateStr, session, sanitizeOpts);
 
     const record = {
       date: dateStr,

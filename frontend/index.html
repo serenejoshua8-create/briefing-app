@@ -90,6 +90,12 @@ button{font-family:inherit;cursor:pointer;}
 .install-banner.show{display:flex;}
 .install-banner button{padding:8px 14px;border-radius:4px;background:var(--ink);color:var(--paper-text);border:none;font-family:var(--font-mono);font-size:11px;text-transform:uppercase;}
 .install-banner .dismiss{background:none;color:var(--ink-text-dim);}
+.sources-panel{border:1px solid var(--line-dark);border-radius:4px;padding:10px 14px;margin-bottom:14px;}
+.sources-panel summary{font-family:var(--font-mono);font-size:11px;color:var(--paper-text-dim);cursor:pointer;}
+.sources-body{margin-top:12px;display:flex;flex-direction:column;gap:4px;}
+.sources-body label{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;color:var(--paper-text-dim);margin-top:8px;}
+.sources-body textarea{width:100%;background:var(--ink-2);border:1px solid var(--line-dark);color:var(--paper-text);padding:8px;border-radius:4px;font-family:var(--font-mono);font-size:12px;box-sizing:border-box;resize:vertical;}
+.sources-body input[type="file"]{font-family:var(--font-mono);font-size:11px;color:var(--paper-text-dim);}
 </style>
 </head>
 <body>
@@ -124,10 +130,24 @@ button{font-family:inherit;cursor:pointer;}
       <button class="btn btn-primary" id="runBtn">Run Briefing</button>
     </div>
     <div class="row">
-      <button class="pill active" id="viewSum">Summary (5)</button>
-      <button class="pill" id="viewAna">Analysis (Top 3)</button>
+      <button class="pill active" id="viewSum">Summary (12)</button>
+      <button class="pill" id="viewAna">Analysis (Top 5)</button>
       <span style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim)">switching does not re-run the briefing</span>
     </div>
+
+    <details class="sources-panel">
+      <summary>Sources (optional) — supply articles/gov sites instead of autonomous search</summary>
+      <div class="sources-body">
+        <label>Article URLs (one per line — paywalled or open, fetched directly)</label>
+        <textarea id="srcUrls" rows="3" placeholder="https://www.wsj.com/articles/..."></textarea>
+        <label>Government/official site URLs (one per line — recent press releases/speeches, last 72h, fetched automatically)</label>
+        <textarea id="srcGovUrls" rows="3" placeholder="https://www.whitehouse.gov/briefing-room/"></textarea>
+        <label>PDF uploads (for paywalled articles you've saved)</label>
+        <input type="file" id="srcPdfs" accept="application/pdf" multiple>
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim);margin-top:8px">Leave all blank to fall back to free autonomous search (Gemini).</div>
+      </div>
+    </details>
+
     <div id="briefingContent"><div class="empty">Press Run Briefing to generate today's dispatch.</div></div>
   </section>
 
@@ -208,7 +228,12 @@ function esc(s){ return (s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;',
 let state = { session:'AM', view:'summary', archView:'summary', current:null, archiveDispatches:[], archiveDrive:[] };
 
 function pointsHtml(t){
-  return (t.points||[]).map(p=>`<div class="point"><span class="q">&#8220;${esc(p.quote)}&#8221;</span> — <a href="${p.url}" target="_blank" rel="noopener">${esc(p.sourceName)}</a></div>`).join('');
+  return (t.points||[]).map(p=>{
+    const src = p.url
+      ? `<a href="${p.url}" target="_blank" rel="noopener">${esc(p.sourceName)}</a>`
+      : esc(p.sourceName); // no link available (e.g. an uploaded PDF with no source URL given)
+    return `<div class="point"><span class="q">&#8220;${esc(p.quote)}&#8221;</span> — ${src}</div>`;
+  }).join('');
 }
 function analysisHtml(a){
   if(!a) return '';
@@ -254,6 +279,25 @@ const RUN_STATUS_MESSAGES = [
   'Reconciling verification passes…',
   'Still working — this can take a few minutes…',
 ];
+function fileToBase64(file){
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]); // strip the data: URL prefix
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+function linesOf(id){
+  return el(id).value.split('\n').map(s => s.trim()).filter(Boolean);
+}
+async function collectSources(){
+  const urls = linesOf('srcUrls');
+  const govUrls = linesOf('srcGovUrls');
+  const files = Array.from(el('srcPdfs').files || []);
+  const pdfs = await Promise.all(files.map(async f => ({ filename: f.name, base64: await fileToBase64(f) })));
+  if (!urls.length && !govUrls.length && !pdfs.length) return undefined;
+  return { urls, govUrls, pdfs };
+}
 async function runBriefing(){
   el('runBtn').disabled = true;
   const startedAt = Date.now();
@@ -266,7 +310,8 @@ async function runBriefing(){
   const msgTimer = setInterval(() => { msgIndex = (msgIndex + 1) % RUN_STATUS_MESSAGES.length; }, 6000);
   const tickTimer = setInterval(renderStatus, 1000);
   try{
-    const record = await api('/api/briefing/run', { method:'POST', body: JSON.stringify({ session: state.session }) });
+    const sources = await collectSources();
+    const record = await api('/api/briefing/run', { method:'POST', body: JSON.stringify({ session: state.session, sources }) });
     state.current = record;
     el('briefingContent').innerHTML = sheetHtml(record, state.view);
   }catch(e){
