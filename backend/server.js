@@ -42,12 +42,15 @@ const driveAuth = new google.auth.GoogleAuth({
 });
 const drive = google.drive({ version: 'v3', auth: driveAuth });
 
-const CLAUDE_MODEL = 'claude-sonnet-4-6';
+const CLAUDE_MODEL = 'claude-sonnet-5';
 const GEMINI_MODEL = 'gemini-2.5-flash';
-const TOTAL_TOPICS = 5;
-const DETAILED_TOPICS = 3;
-const MIN_PAYWALLED = 1;
-const DAILY_MAX_TOKENS = 9000;
+const TOTAL_TOPICS = 12;
+const DETAILED_TOPICS = 5;
+const MIN_PAYWALLED = 3;
+// 9000 was the original value but truncated mid-JSON on a real 12-topic +
+// 5-analysis run (confirmed via the "partial" flag) — a full dispatch needs
+// more headroom than that.
+const DAILY_MAX_TOKENS = 16000;
 // Gemini 2.5 Flash's internal "thinking" tokens count against maxOutputTokens,
 // so it needs a much larger budget than Claude to finish a 12-topic dispatch
 // without getting cut off mid-JSON.
@@ -209,7 +212,12 @@ async function generateDispatch(config, dateStr, session) {
       max_tokens: DAILY_MAX_TOKENS,
       system: systemPrompt,
       messages: [{ role: 'user', content: `Prepare the ${session} briefing for ${dateStr}.` }],
-      tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+      // max_uses caps the agentic search loop — each search round-trip resends the
+      // whole accumulated conversation as input tokens, so an unbounded loop can
+      // balloon into millions of input tokens (observed: 68 searches -> 1.15M
+      // input tokens in one request). 20 is enough headroom for ~12 topics x 3
+      // quotes without runaway cost.
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 20 }],
     });
     const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
     const partial = res.stop_reason === 'max_tokens';
@@ -265,18 +273,18 @@ function isApprovedSourceUrl(url) {
     return false;
   }
 }
+// Shared by the initial pass and by reconciliation's "fix" path below —
+// a corrected topic from a verifier is just as capable of citing a fake or
+// off-list URL as the original generation, so it must pass the same checks.
+function sanitizeTopicPoints(t) {
+  if (!Array.isArray(t.points)) { t.points = []; return t; }
+  t.points = t.points.filter(p =>
+    p.url && looksLikeArticleUrl(p.url) && isApprovedSourceUrl(p.url)
+  );
+  return t;
+}
 async function sanitizePoints(topics) {
-  for (const t of topics) {
-    if (!Array.isArray(t.points)) { t.points = []; continue; }
-    const kept = [];
-    for (const p of t.points) {
-      if (!p.url || !looksLikeArticleUrl(p.url)) continue; // drop homepage/fabricated-looking links outright
-      if (!isApprovedSourceUrl(p.url)) continue; // drop points citing outlets outside the approved source list
-      kept.push(p);
-    }
-    t.points = kept;
-  }
-  return topics.filter(t => t.points.length > 0);
+  return topics.map(sanitizeTopicPoints).filter(t => t.points.length > 0);
 }
 
 /* ============================================================
@@ -325,10 +333,10 @@ Never use straight double-quotes inside string values.`;
 
   const res = await anthropic.messages.create({
     model: CLAUDE_MODEL,
-    max_tokens: 6000,
+    max_tokens: 8000,
     system: prompt,
     messages: [{ role: 'user', content: 'Verify the topics now.' }],
-    tools: [{ type: 'web_search_20250305', name: 'web_search' }],
+    tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 12 }],
   });
   const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
   try {
@@ -384,7 +392,12 @@ async function verifyDispatch(topics, dateStr, session) {
     const a = passA.find(r => r.index === i);
     const b = passB.find(r => r.index === i);
     if ((a && a.verdict === 'drop') || (b && b.verdict === 'drop')) { dropped++; return; }
-    if (b && b.verdict === 'fix' && b.corrected && b.corrected.headline) { next.push(b.corrected); fixed++; return; }
+    if (b && b.verdict === 'fix' && b.corrected && b.corrected.headline) {
+      const corrected = sanitizeTopicPoints(b.corrected);
+      if (corrected.points.length > 0) { next.push(corrected); fixed++; }
+      else { dropped++; } // the "fix" cited no valid approved-source URLs — treat as a drop, not a silent pass-through
+      return;
+    }
     next.push(t);
   });
   return { topics: next, fixed, dropped, clean: fixed === 0 && dropped === 0 };
