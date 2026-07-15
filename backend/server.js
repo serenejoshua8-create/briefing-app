@@ -276,10 +276,19 @@ async function urlIsReachable(url) {
 // (Gemini especially, observed empirically) don't reliably follow it as a
 // prompt-only constraint.
 const APPROVED_HOSTNAMES = SOURCES.map(s => s.url.toLowerCase());
+const FREE_HOSTNAMES = SOURCES.filter(s => s.free).map(s => s.url.toLowerCase());
 function isApprovedSourceUrl(url) {
   try {
     const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
     return APPROVED_HOSTNAMES.some(h => host === h || host.endsWith('.' + h));
+  } catch {
+    return false;
+  }
+}
+function isFreeSourceUrl(url) {
+  try {
+    const host = new URL(url).hostname.toLowerCase().replace(/^www\./, '');
+    return FREE_HOSTNAMES.some(h => host === h || host.endsWith('.' + h));
   } catch {
     return false;
   }
@@ -292,10 +301,13 @@ function sanitizeTopicPoints(t, { enforceApprovedDomains = true, validUrls = nul
   t.points = t.points.filter(p => {
     if (!p.quote || !p.sourceName) return false;
     if (!p.url) return !enforceApprovedDomains; // no-URL points (e.g. from an uploaded PDF) only allowed outside the strict autonomous-search path
-    // Source-driven mode has an exact set of known-good URLs — require an
-    // exact match rather than just a shape check, since a model can garble
-    // a character while copying a URL (observed: "laucnh" for "launches").
-    if (validUrls) return validUrls.has(p.url);
+    if (validUrls) {
+      // Source-driven mode: either an exact match to a supplied source (a
+      // model can garble a character while copying a URL — observed:
+      // "laucnh" for "launches" — so shape-checking alone isn't enough),
+      // or a gap-filled result from a free/open outlet found via search.
+      return validUrls.has(p.url) || (looksLikeArticleUrl(p.url) && isFreeSourceUrl(p.url));
+    }
     if (!looksLikeArticleUrl(p.url)) return false;
     return !enforceApprovedDomains || isApprovedSourceUrl(p.url);
   });
@@ -408,6 +420,32 @@ async function fetchGovRecentItems(baseUrl, sinceHours = GOV_RECENCY_HOURS) {
   return results;
 }
 
+// PDFs have no embedded URL, but the reader wants the original article
+// hyperlinked (even if it stays paywalled) rather than left as plain text.
+// This is a single bounded lookup on Gemini's free tier — one search per
+// PDF, not an open-ended loop — so it stays at $0 regardless of Anthropic
+// funding. Falls back to no URL (rendered as plain text) if unconfident.
+async function lookupArticleUrl(title, sourceName) {
+  try {
+    const prompt = `Find the exact URL of this news article.
+Title: ${title}
+Publication: ${sourceName || '(unknown, infer from the title/content if possible)'}
+
+Respond with ONLY the URL on its own, nothing else — no markdown, no explanation. If you cannot find a confident exact match (not just the publication's homepage), respond with exactly: NONE`;
+    const res = await genai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: { tools: [{ googleSearch: {} }], maxOutputTokens: 200 },
+    });
+    const text = (res.text || '').trim();
+    if (!text || text === 'NONE' || !looksLikeArticleUrl(text)) return null;
+    return text;
+  } catch (e) {
+    logError('lookupArticleUrl', e);
+    return null;
+  }
+}
+
 async function assembleSourceMaterial(sources) {
   const items = [];
   for (const url of sources.urls || []) {
@@ -420,7 +458,12 @@ async function assembleSourceMaterial(sources) {
   for (const pdf of sources.pdfs || []) {
     try {
       const extracted = await extractPdfText(pdf.base64, pdf.sourceName || pdf.filename);
-      if (pdf.sourceUrl) extracted.url = pdf.sourceUrl;
+      if (pdf.sourceUrl) {
+        extracted.url = pdf.sourceUrl;
+      } else {
+        const foundUrl = await lookupArticleUrl(extracted.sourceName, pdf.sourceName);
+        if (foundUrl) extracted.url = foundUrl;
+      }
       items.push(extracted);
     } catch (e) {
       logError(`extractPdfText:${pdf.filename || 'unknown'}`, e);
@@ -432,6 +475,8 @@ async function assembleSourceMaterial(sources) {
   return { items, materialBlock };
 }
 
+const FREE_SOURCES = SOURCES.filter(s => s.free);
+
 function buildSourceDrivenPrompt(config, dateStr, session, materialBlock) {
   const chosen = ALL_TOPICS.filter(t => config.topics.includes(t.id));
   const extras = (config.extraTopics || '').trim();
@@ -440,6 +485,7 @@ function buildSourceDrivenPrompt(config, dateStr, session, materialBlock) {
   const extraLine = extras
     ? `\n\nAdditional reader-specified topics (equal priority):\n  - ${extras.split(',').map(s => s.trim()).filter(Boolean).join('\n  - ')}`
     : '';
+  const freeSourceList = FREE_SOURCES.map(s => s.url).join(', ');
 
   return `You are a senior geopolitical and economic intelligence analyst preparing a twice-daily briefing for a single expert reader in Delhi, India.
 
@@ -448,18 +494,21 @@ Today is ${dateStr} (IST). This is the ${session === 'AM' ? 'MORNING (0700 IST)'
 The reader has selected ONLY these topics:
 ${topicLines}${extraLine}
 
-=== SOURCE MATERIAL — this is your ONLY source of information ===
-Do NOT use any outside knowledge or web search. Base every fact and quote strictly on the material below. If the material doesn't support ${TOTAL_TOPICS} distinct topics, return fewer rather than inventing anything.
+=== SUPPLIED SOURCE MATERIAL — authoritative, use verbatim ===
+The reader has personally gathered this material (including paywalled articles they have access to). Treat it as ground truth: base every quote drawn from it strictly on the text below, never paraphrased into a "quote".
 
 ${materialBlock}
 
-=== SOURCING RULES ===
-Each "point" is a quote drawn verbatim (10-30 words) from the material above, tagged with the "sourceName" and "url" it came from — copy the exact url given for that source; if a source has no url listed, omit the "url" field for that point entirely, never invent one.
-Do not reuse one quote for multiple points. Do not fabricate a quote not present in the material.
+=== FILLING GAPS WITH OPEN SEARCH ===
+The supplied material may not cover all ${TOTAL_TOPICS} topics. You MAY use web search to find ADDITIONAL recent developments for topics not covered above, but ONLY from these free/open outlets: ${freeSourceList}. Do not search for paywalled outlets — the reader already supplied those directly. If neither the supplied material nor open search covers a topic, return fewer topics rather than inventing one.
 
-=== STRUCTURE ===
-LAYER 1 (up to ${TOTAL_TOPICS}): the most significant developments in the material, ranked. Each gets: "thread" (2-4 word tag), "headline" (<12 words), "topicId", "storyDate" (ISO date, from the material if stated else ${dateStr}), "points" (array of up to 3 sourced quotes as above).
-LAYER 2 (top ${DETAILED_TOPICS} of those): mark "detailed":true and add "analysis": {whatHappened, rightWrong, delta, forecast, outlook, confidence ("High"|"Medium"|"Low"), confidencePct (0-100), confidenceReason}. The rest get "detailed":false, no analysis.
+=== SOURCING RULES ===
+Each "point" is a quote (10-30 words), tagged with "sourceName" and "url". For quotes from the supplied material: copy the exact url given for that source; if a source has no url listed, omit the "url" field entirely, never invent one. For quotes found via open search: the url must be the real article's exact path on one of the free outlets listed above, never a homepage.
+Do not reuse one quote for multiple points. Do not fabricate a quote not present in either the supplied material or a real open-search result.
+
+=== STRUCTURE — the analysis is the point of this briefing, not the summary ===
+LAYER 1 (up to ${TOTAL_TOPICS}): the most significant developments, ranked. Each gets: "thread" (2-4 word tag), "headline" (<12 words), "topicId", "storyDate" (ISO date, from the material/article if stated else ${dateStr}), "points" (array of up to 3 sourced quotes as above).
+LAYER 2 (top ${DETAILED_TOPICS} of those): mark "detailed":true and add "analysis": {whatHappened, rightWrong, delta, forecast, outlook, confidence ("High"|"Medium"|"Low"), confidencePct (0-100), confidenceReason}. This analysis is the reader's actual reason for reading — go beyond restating the source material: assess what's actually significant versus noise, where the official framing likely diverges from reality, how this changes the picture from before, and a concrete, falsifiable 24-72h forecast with your real confidence level, not a hedge. The rest get "detailed":false, no analysis.
 
 Respond with ONLY valid JSON, no markdown fences, no commentary:
 {"topics":[{"thread":"...","headline":"...","topicId":"<one of: ${idList}>","storyDate":"YYYY-MM-DD","detailed":true,"points":[{"quote":"...","sourceName":"...","url":"..."}],"analysis":{...only if detailed:true...}}]}
@@ -471,17 +520,19 @@ Rules:
 
 async function generateDispatchFromSources(config, dateStr, session, materialBlock) {
   const systemPrompt = buildSourceDrivenPrompt(config, dateStr, session, materialBlock);
-  const userMsg = `Prepare the ${session} briefing for ${dateStr} from the supplied source material.`;
+  const userMsg = `Prepare the ${session} briefing for ${dateStr} from the supplied source material, filling any remaining topic gaps with open-source search only.`;
 
-  // No tools/search in either branch — a plain summarization call over
-  // supplied text, not an autonomous search loop. Cost is bounded by input
-  // material size, not by an open-ended search budget.
+  // A small bounded search budget for gap-filling from free/open outlets only
+  // (the supplied material stays the primary source) — 10 is enough to cover
+  // a handful of missing topics without reintroducing the runaway-cost loop
+  // an unbounded search budget caused before.
   if (HAS_ANTHROPIC) {
     const res = await anthropic.messages.create({
       model: CLAUDE_MODEL,
       max_tokens: DAILY_MAX_TOKENS,
       system: systemPrompt,
       messages: [{ role: 'user', content: userMsg }],
+      tools: [{ type: 'web_search_20250305', name: 'web_search', max_uses: 10 }],
     });
     const text = res.content.filter(b => b.type === 'text').map(b => b.text).join('\n');
     const partial = res.stop_reason === 'max_tokens';
@@ -492,7 +543,7 @@ async function generateDispatchFromSources(config, dateStr, session, materialBlo
   const res = await genai.models.generateContent({
     model: GEMINI_MODEL,
     contents: `${systemPrompt}\n\n${userMsg}`,
-    config: { maxOutputTokens: GEMINI_DAILY_MAX_TOKENS },
+    config: { tools: [{ googleSearch: {} }], maxOutputTokens: GEMINI_DAILY_MAX_TOKENS },
   });
   const text = res.text || '';
   const partial = res.candidates?.[0]?.finishReason === 'MAX_TOKENS';

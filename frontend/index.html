@@ -144,6 +144,8 @@ button{font-family:inherit;cursor:pointer;}
         <textarea id="srcGovUrls" rows="3" placeholder="https://www.whitehouse.gov/briefing-room/"></textarea>
         <label>PDF uploads (for paywalled articles you've saved)</label>
         <input type="file" id="srcPdfs" accept="application/pdf" multiple>
+        <div id="srcPdfUrls" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim);margin-top:4px">Optionally paste each PDF's original article URL above (paywalled is fine) — if left blank, we'll try to look it up automatically from the title.</div>
         <div style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim);margin-top:8px">Leave all blank to fall back to free autonomous search (Gemini).</div>
       </div>
     </details>
@@ -290,11 +292,22 @@ function fileToBase64(file){
 function linesOf(id){
   return el(id).value.split('\n').map(s => s.trim()).filter(Boolean);
 }
+el('srcPdfs').addEventListener('change', () => {
+  const files = Array.from(el('srcPdfs').files || []);
+  el('srcPdfUrls').innerHTML = files.map((f, i) => `
+    <input type="text" class="pdf-url-input" data-index="${i}" placeholder="Original article URL for &quot;${esc(f.name)}&quot; (optional)" style="background:var(--ink-2);border:1px solid var(--line-dark);color:var(--paper-text);padding:6px 8px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">
+  `).join('');
+});
 async function collectSources(){
   const urls = linesOf('srcUrls');
   const govUrls = linesOf('srcGovUrls');
   const files = Array.from(el('srcPdfs').files || []);
-  const pdfs = await Promise.all(files.map(async f => ({ filename: f.name, base64: await fileToBase64(f) })));
+  const urlInputs = Array.from(document.querySelectorAll('.pdf-url-input'));
+  const pdfs = await Promise.all(files.map(async (f, i) => ({
+    filename: f.name,
+    base64: await fileToBase64(f),
+    sourceUrl: urlInputs[i]?.value.trim() || undefined,
+  })));
   if (!urls.length && !govUrls.length && !pdfs.length) return undefined;
   return { urls, govUrls, pdfs };
 }
