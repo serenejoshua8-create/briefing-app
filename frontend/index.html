@@ -265,6 +265,14 @@ function topicHtml(t, showAnalysis){
     ${showAnalysis ? analysisHtml(t.analysis) : ''}
   </div>`;
 }
+function pdfArchiveHtml(record){
+  const pdfs = record.meta?.pdfArchive || [];
+  if(!pdfs.length) return '';
+  return `<div style="margin-top:16px;padding-top:12px;border-top:1px dashed var(--line-light)">
+    <div class="a-label">Source PDFs</div>
+    ${pdfs.map(p=>`<div class="point"><a href="${p.storageUrl}" target="_blank" rel="noopener">${esc(p.sourceName || p.filename)}</a></div>`).join('')}
+  </div>`;
+}
 function sheetHtml(record, view){
   const topics = view==='analysis' ? record.topics.filter(t=>t.detailed) : record.topics;
   const v = record.verify||{};
@@ -276,6 +284,7 @@ function sheetHtml(record, view){
       ${record.partial?'<span class="stamp low">partial</span>':''}
     </div>
     ${topics.map(t=>topicHtml(t, view==='analysis')).join('') || '<div class="empty">Nothing in this view.</div>'}
+    ${pdfArchiveHtml(record)}
   </div>`;
 }
 

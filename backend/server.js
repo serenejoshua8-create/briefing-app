@@ -379,6 +379,22 @@ async function extractPdfText(base64, label) {
   }
 }
 
+// Uploaded PDFs are kept in Supabase Storage (not just used transiently for
+// extraction) so the original file can be reopened from the Archive tab
+// later, even though the article's own URL may stay paywalled.
+const PDF_BUCKET = 'pdfs';
+async function uploadPdfToStorage(base64, filename, dateStr, session) {
+  const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+  const path = `${dateStr}/${session}/${Date.now()}-${safeName}`;
+  const { error } = await supabase.storage.from(PDF_BUCKET).upload(path, Buffer.from(base64, 'base64'), {
+    contentType: 'application/pdf',
+    upsert: false,
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from(PDF_BUCKET).getPublicUrl(path);
+  return data.publicUrl;
+}
+
 // Heuristic: scan a government listing page for links whose nearby text
 // contains a recognizable date within the last GOV_RECENCY_HOURS, then
 // fetch each matching page's text. Government site markup varies widely
@@ -446,8 +462,9 @@ Respond with ONLY the URL on its own, nothing else — no markdown, no explanati
   }
 }
 
-async function assembleSourceMaterial(sources) {
+async function assembleSourceMaterial(sources, dateStr, session) {
   const items = [];
+  const pdfArchive = [];
   for (const url of sources.urls || []) {
     const article = await fetchArticleText(url);
     if (article) items.push(article);
@@ -465,6 +482,12 @@ async function assembleSourceMaterial(sources) {
         if (foundUrl) extracted.url = foundUrl;
       }
       items.push(extracted);
+      try {
+        const storageUrl = await uploadPdfToStorage(pdf.base64, pdf.filename, dateStr, session);
+        pdfArchive.push({ filename: pdf.filename, sourceName: extracted.sourceName, storageUrl });
+      } catch (e) {
+        logError(`uploadPdfToStorage:${pdf.filename || 'unknown'}`, e); // extraction still succeeds even if archiving the file fails
+      }
     } catch (e) {
       logError(`extractPdfText:${pdf.filename || 'unknown'}`, e);
     }
@@ -472,7 +495,7 @@ async function assembleSourceMaterial(sources) {
   const materialBlock = items
     .map(it => `--- SOURCE: ${it.sourceName}${it.url ? ` (${it.url})` : ''} ---\n${it.text}`)
     .join('\n\n');
-  return { items, materialBlock };
+  return { items, materialBlock, pdfArchive };
 }
 
 const FREE_SOURCES = SOURCES.filter(s => s.free);
@@ -682,9 +705,10 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
       (sources.pdfs && sources.pdfs.length)
     );
 
-    let rawTopics, partial, sanitized, sanitizeOpts;
+    let rawTopics, partial, sanitized, sanitizeOpts, pdfArchive = [];
     if (hasSuppliedSources) {
-      const { items, materialBlock } = await assembleSourceMaterial(sources);
+      const { items, materialBlock, pdfArchive: archived } = await assembleSourceMaterial(sources, dateStr, session);
+      pdfArchive = archived;
       if (!materialBlock.trim()) return res.status(400).json({ error: 'Could not extract any usable text from the supplied sources.' });
       sanitizeOpts = { enforceApprovedDomains: false, validUrls: new Set(items.filter(it => it.url).map(it => it.url)) };
       ({ topics: rawTopics, partial } = await generateDispatchFromSources(config, dateStr, session, materialBlock));
@@ -705,7 +729,7 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
       topics: verified.topics,
       partial,
       verify: { fixed: verified.fixed, dropped: verified.dropped, clean: verified.clean },
-      meta: { topics: config.topics, extraTopics: config.extraTopics },
+      meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive },
     };
 
     const { error: upsertErr } = await supabase.from('briefings').upsert(record, { onConflict: 'date,session' });
@@ -842,6 +866,16 @@ app.get('/api/logs', requireSecret, (req, res) => {
     res.status(500).json({ error: e.message || String(e) });
   }
 });
+
+// Idempotent — creates the PDF archive bucket once, silently no-ops if it
+// already exists on subsequent restarts/deploys.
+async function ensurePdfBucket() {
+  const { data: buckets } = await supabase.storage.listBuckets();
+  if (buckets?.some(b => b.name === PDF_BUCKET)) return;
+  const { error } = await supabase.storage.createBucket(PDF_BUCKET, { public: true, fileSizeLimit: '15MB' });
+  if (error) logError('ensurePdfBucket', error);
+}
+ensurePdfBucket();
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Backend v${VERSION} listening on :${PORT}`));
