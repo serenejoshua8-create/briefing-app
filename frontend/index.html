@@ -329,8 +329,31 @@ async function collectSources(){
   if (!urls.length && !govUrls.length && !pdfs.length) return undefined;
   return { urls, govUrls, pdfs };
 }
+function todayIST(){
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }); // matches the backend's own date format exactly
+}
 async function runBriefing(){
   el('runBtn').disabled = true;
+  el('briefingContent').innerHTML = '<div class="empty">Checking for an existing dispatch…</div>';
+  try{
+    // If today's session was already generated (e.g. by a scheduled run), just
+    // show it instantly instead of regenerating — avoids wasted API cost and
+    // matches what already happened for the day.
+    try{
+      const existing = await api(`/api/briefing/${todayIST()}/${state.session}`);
+      state.current = existing;
+      el('briefingContent').innerHTML = sheetHtml(existing, state.view);
+      return;
+    }catch(e){ /* 404 means nothing generated yet — fall through to generate below */ }
+
+    await runBriefingGenerate();
+  }catch(e){
+    el('briefingContent').innerHTML = `<div class="err"><b>Error</b> ${esc(e.message)}</div>`;
+  }finally{
+    el('runBtn').disabled = false;
+  }
+}
+async function runBriefingGenerate(){
   const startedAt = Date.now();
   let msgIndex = 0;
   const renderStatus = () => {
@@ -345,12 +368,9 @@ async function runBriefing(){
     const record = await api('/api/briefing/run', { method:'POST', body: JSON.stringify({ session: state.session, sources }) });
     state.current = record;
     el('briefingContent').innerHTML = sheetHtml(record, state.view);
-  }catch(e){
-    el('briefingContent').innerHTML = `<div class="err"><b>Error</b> ${esc(e.message)}</div>`;
   }finally{
     clearInterval(msgTimer);
     clearInterval(tickTimer);
-    el('runBtn').disabled = false;
   }
 }
 async function loadArchive(){
