@@ -1,26 +1,44 @@
 name: Trigger AM/PM briefing
 
+# Backup for the scheduled Claude sessions (am-briefing-source-gather /
+# pm-briefing-source-gather), which gather real sources and call
+# /api/briefing/run directly — but those only fire while that Claude
+# app/session is open on its machine, so this is the reliable server-side
+# fallback in case that machine was off. Fires ~25-40 min after the Claude
+# tasks' target times to give them room to finish first, and skips the run
+# entirely if a record for that date+session already exists (checked via
+# GET /api/briefing/:date/:session) so it never overwrites a good
+# source-driven result with a weaker no-sources autonomous-search one.
 on:
   schedule:
-    # 01:30 UTC = 07:00 IST
-    - cron: '30 1 * * *'
-    # 15:30 UTC = 21:00 IST
-    - cron: '30 15 * * *'
-  workflow_dispatch: {} # lets you trigger manually from the Actions tab too
+    # 01:45 UTC = 07:15 IST (after the ~06:50 IST Claude task)
+    - cron: '45 1 * * *'
+    # 15:50 UTC = 21:20 IST (after the ~20:41 IST Claude task)
+    - cron: '50 15 * * *'
+  workflow_dispatch: {}
 
 jobs:
   trigger:
     runs-on: ubuntu-latest
     steps:
-      - name: Determine session from current UTC hour
+      - name: Determine session and IST date
         id: session
         run: |
           HOUR=$(date -u +%H)
           if [ "$HOUR" = "01" ]; then echo "session=AM" >> "$GITHUB_OUTPUT"
           else echo "session=PM" >> "$GITHUB_OUTPUT"
           fi
+          echo "date=$(TZ=Asia/Kolkata date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
-      - name: Call backend
+      - name: Check if already generated
+        id: check
+        run: |
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.BACKEND_URL }}/api/briefing/${{ steps.session.outputs.date }}/${{ steps.session.outputs.session }}")
+          echo "exists=$([ "$STATUS" = "200" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Call backend (only if not already generated)
+        if: steps.check.outputs.exists != 'true'
         run: |
           curl -sf -X POST "${{ secrets.BACKEND_URL }}/api/briefing/run" \
             -H "Content-Type: application/json" \
