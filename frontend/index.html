@@ -141,7 +141,13 @@ button{font-family:inherit;cursor:pointer;}
         <label>Article URLs (one per line — paywalled or open, fetched directly)</label>
         <textarea id="srcUrls" rows="3" placeholder="https://www.wsj.com/articles/..."></textarea>
         <label>Government/official site URLs (one per line — recent press releases/speeches, last 72h, fetched automatically)</label>
-        <textarea id="srcGovUrls" rows="3" placeholder="https://www.whitehouse.gov/briefing-room/"></textarea>
+        <textarea id="srcGovUrls" rows="7" placeholder="https://www.whitehouse.gov/briefing-room/">https://pib.gov.in/
+https://www.mea.gov.in/press-releases.htm
+https://www.gov.uk/search/news-and-communications
+https://www.whitehouse.gov/briefing-room/
+https://in.ambafrance.org/-Economy-
+https://in.usembassy.gov/embassy-consulates/new-delhi/sections-offices/economic-section/</textarea>
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim);margin-top:4px">Last two (France/US embassy economic sections) are a best guess for "France ECS" / "US Trade Sec" — please verify or replace with the actual URL.</div>
         <label>PDF uploads (for paywalled articles you've saved)</label>
         <input type="file" id="srcPdfs" accept="application/pdf" multiple>
         <div id="srcPdfUrls" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
@@ -184,16 +190,19 @@ const el = id => document.getElementById(id);
 function apiBase(){ return el('apiBase').value.replace(/\/$/,''); }
 function headers(){ const h={'Content-Type':'application/json'}; const s=el('appSecret').value; if(s) h['x-app-secret']=s; return h; }
 
-// Remember apiBase/appSecret in this browser only (never in the page source),
-// so they don't need to be retyped on every visit.
+// Remember apiBase/appSecret/srcGovUrls in this browser only (never in the
+// page source), so they don't need to be retyped/re-edited on every visit.
 (function restoreSaved(){
   const savedBase = localStorage.getItem('briefing_apiBase');
   const savedSecret = localStorage.getItem('briefing_appSecret');
+  const savedGovUrls = localStorage.getItem('briefing_srcGovUrls');
   if(savedBase) el('apiBase').value = savedBase;
   if(savedSecret) el('appSecret').value = savedSecret;
+  if(savedGovUrls !== null) el('srcGovUrls').value = savedGovUrls; // once edited, the edit wins over the built-in default above
 })();
 el('apiBase').addEventListener('change', ()=> localStorage.setItem('briefing_apiBase', el('apiBase').value));
 el('appSecret').addEventListener('change', ()=> localStorage.setItem('briefing_appSecret', el('appSecret').value));
+el('srcGovUrls').addEventListener('change', ()=> localStorage.setItem('briefing_srcGovUrls', el('srcGovUrls').value));
 
 // Lightweight access gate for sharing with test users — not real security
 // (visible to anyone reading this page's source), just a convenience barrier
