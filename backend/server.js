@@ -805,6 +805,48 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
   }
 });
 
+// Accepts a fully-written dispatch instead of raw sources -- for cases where
+// Claude itself (in an interactive or scheduled session, reading the actual
+// source material directly) writes the topics/analysis, rather than the
+// backend calling an LLM API to generate it. Skips generation and the
+// Gemini-based verification pass entirely (both would just reintroduce the
+// same rate-limit/503 risk this path exists to avoid) -- still runs the
+// same URL/shape sanitization as every other path so nothing fabricated or
+// malformed slips through un-checked.
+app.post('/api/briefing/submit', requireSecret, async (req, res) => {
+  const { session, topics: rawTopics, partial, pdfArchive } = req.body;
+  if (session !== 'AM' && session !== 'PM') return res.status(400).json({ error: 'session must be AM or PM' });
+  if (!Array.isArray(rawTopics) || !rawTopics.length) return res.status(400).json({ error: 'topics array is required and must be non-empty' });
+
+  try {
+    const dateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const sanitized = await sanitizePoints(rawTopics, { enforceApprovedDomains: false });
+    if (!sanitized.length) return res.status(400).json({ error: 'No valid topics survived sanitization -- check that URLs are real article paths, not homepages.' });
+
+    const { data: cfgRow } = await supabase.from('app_config').select('*').eq('id', 1).single();
+    const config = { topics: cfgRow?.topics || [], extraTopics: cfgRow?.extra_topics || '' };
+    const dropped = rawTopics.length - sanitized.length;
+
+    const record = {
+      date: dateStr,
+      session,
+      generated_at: new Date().toISOString(),
+      topics: sanitized,
+      partial: !!partial,
+      verify: { fixed: 0, dropped, clean: dropped === 0, mode: 'claude-direct' },
+      meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive: pdfArchive || [] },
+    };
+
+    const { error: upsertErr } = await supabase.from('briefings').upsert(record, { onConflict: 'date,session' });
+    if (upsertErr) return res.status(500).json({ error: upsertErr.message });
+
+    res.json(record);
+  } catch (e) {
+    logError('POST /api/briefing/submit', e);
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
 app.get('/api/briefing/:date/:session', async (req, res) => {
   const { date, session } = req.params;
   const { data, error } = await supabase.from('briefings').select('*').eq('date', date).eq('session', session).single();
