@@ -256,7 +256,11 @@ function looksLikeArticleUrl(url) {
   try {
     const u = new URL(url);
     const path = u.pathname.replace(/\/+$/, '');
-    return path.length > 1 && path.split('/').filter(Boolean).length >= 2;
+    if (path.length > 1 && path.split('/').filter(Boolean).length >= 2) return true;
+    // mea.gov.in encodes the real article path after "?" (e.g. "?dtl/41475/...")
+    // instead of a normal pathname, so it needs the same depth check applied to the search string.
+    const search = u.search.replace(/^\?/, '');
+    return search.split('/').filter(Boolean).length >= 2;
   } catch {
     return false;
   }
