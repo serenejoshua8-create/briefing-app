@@ -467,10 +467,18 @@ async function assembleSourceMaterial(sources, dateStr, session) {
   const pdfArchive = [];
   for (const url of sources.urls || []) {
     const article = await fetchArticleText(url);
-    if (article) items.push(article);
+    if (article) items.push({ ...article, kind: 'url' });
   }
   for (const govUrl of sources.govUrls || []) {
-    items.push(...await fetchGovRecentItems(govUrl));
+    for (const it of await fetchGovRecentItems(govUrl)) items.push({ ...it, kind: 'gov' });
+  }
+  // Pre-fetched article text (e.g. gathered via real browser navigation, not
+  // this backend's own fetch) — for sites like Reuters/PIB that return
+  // 401/403 to a plain server-side fetch from Render's IP but load fine in
+  // an actual browser. Supplied directly, no server-side fetch attempted.
+  for (const a of sources.articles || []) {
+    if (!a.text || !a.url) continue;
+    items.push({ sourceName: a.sourceName || new URL(a.url).hostname.replace(/^www\./, ''), url: a.url, text: truncateText(a.text, MAX_SOURCE_CHARS), kind: a.kind === 'gov' ? 'gov' : 'url' });
   }
   for (const pdf of sources.pdfs || []) {
     try {
@@ -481,7 +489,7 @@ async function assembleSourceMaterial(sources, dateStr, session) {
         const foundUrl = await lookupArticleUrl(extracted.sourceName, pdf.sourceName);
         if (foundUrl) extracted.url = foundUrl;
       }
-      items.push(extracted);
+      items.push({ ...extracted, kind: 'pdf' });
       try {
         const storageUrl = await uploadPdfToStorage(pdf.base64, pdf.filename, dateStr, session);
         pdfArchive.push({ filename: pdf.filename, sourceName: extracted.sourceName, storageUrl });
@@ -493,7 +501,7 @@ async function assembleSourceMaterial(sources, dateStr, session) {
     }
   }
   const materialBlock = items
-    .map(it => `--- SOURCE: ${it.sourceName}${it.url ? ` (${it.url})` : ''} ---\n${it.text}`)
+    .map(it => `--- SOURCE (${it.kind}): ${it.sourceName}${it.url ? ` (${it.url})` : ''} ---\n${it.text}`)
     .join('\n\n');
   return { items, materialBlock, pdfArchive };
 }
@@ -518,9 +526,14 @@ The reader has selected ONLY these topics:
 ${topicLines}${extraLine}
 
 === SUPPLIED SOURCE MATERIAL — authoritative, use verbatim ===
-The reader has personally gathered this material (including paywalled articles they have access to). Treat it as ground truth: base every quote drawn from it strictly on the text below, never paraphrased into a "quote".
+The reader has personally gathered this material (including paywalled articles they have access to). Treat it as ground truth: base every quote drawn from it strictly on the text below, never paraphrased into a "quote". Each source is tagged with its kind: (gov) = official government/embassy press release or speech, (pdf) = a paywalled article the reader uploaded, (url) = an article link the reader supplied directly.
 
 ${materialBlock}
+
+=== COVERAGE REQUIREMENT — do not silently drop supplied material ===
+Every distinct (gov) item and every distinct (pdf) item above MUST appear as its own topic in your output — these were deliberately gathered/uploaded by the reader and must not be skipped or merged away for being "less newsworthy" than other stories.
+
+(pdf) items are the reader's highest priority: these are paywalled articles they personally obtained, which is harder-won than anything findable by search. Give (pdf) items priority for "detailed":true / full analysis treatment over (gov), (url), or open-search topics of comparable significance — when choosing which topics get analysis, a (pdf) item should win any close call. (gov) items get "detailed":true only if genuinely significant (a major policy shift, escalation, or market-moving development); otherwise "detailed":false is correct, but it must still be present as a topic. (url) items and open-search results should be included based on straightforward newsworthiness as usual.
 
 === FILLING GAPS WITH OPEN SEARCH ===
 The supplied material may not cover all ${TOTAL_TOPICS} topics. You MAY use web search to find ADDITIONAL recent developments for topics not covered above, but ONLY from these free/open outlets: ${freeSourceList}. Do not search for paywalled outlets — the reader already supplied those directly. If neither the supplied material nor open search covers a topic, return fewer topics rather than inventing one.
@@ -530,8 +543,8 @@ Each "point" is a quote (10-30 words), tagged with "sourceName" and "url". For q
 Do not reuse one quote for multiple points. Do not fabricate a quote not present in either the supplied material or a real open-search result.
 
 === STRUCTURE — the analysis is the point of this briefing, not the summary ===
-LAYER 1 (up to ${TOTAL_TOPICS}): the most significant developments, ranked. Each gets: "thread" (2-4 word tag), "headline" (<12 words), "topicId", "storyDate" (ISO date, from the material/article if stated else ${dateStr}), "points" (array of up to 3 sourced quotes as above).
-LAYER 2 (top ${DETAILED_TOPICS} of those): mark "detailed":true and add "analysis": {whatHappened, rightWrong, delta, forecast, outlook, confidence ("High"|"Medium"|"Low"), confidencePct (0-100), confidenceReason}. This analysis is the reader's actual reason for reading — go beyond restating the source material: assess what's actually significant versus noise, where the official framing likely diverges from reality, how this changes the picture from before, and a concrete, falsifiable 24-72h forecast with your real confidence level, not a hedge. The rest get "detailed":false, no analysis.
+LAYER 1 (up to ${TOTAL_TOPICS}): the most significant developments, ranked — this MUST include every (gov) and (pdf) item per the coverage requirement above, plus the best of whatever else is available. Each gets: "thread" (2-4 word tag), "headline" (<12 words), "topicId", "storyDate" (ISO date, from the material/article if stated else ${dateStr}), "points" (array of up to 3 sourced quotes as above).
+LAYER 2: mark exactly ${DETAILED_TOPICS} topics as "detailed":true if at least ${DETAILED_TOPICS} total topics exist (fewer only if there genuinely aren't enough topics) — the ${DETAILED_TOPICS} most significant ones, regardless of whether they came from supplied material or open search. Add "analysis": {whatHappened, rightWrong, delta, forecast, outlook, confidence ("High"|"Medium"|"Low"), confidencePct (0-100), confidenceReason}. This analysis is the reader's actual reason for reading — go beyond restating the source material: assess what's actually significant versus noise, where the official framing likely diverges from reality, how this changes the picture from before, and a concrete, falsifiable 24-72h forecast with your real confidence level, not a hedge. The rest get "detailed":false, no analysis.
 
 Respond with ONLY valid JSON, no markdown fences, no commentary:
 {"topics":[{"thread":"...","headline":"...","topicId":"<one of: ${idList}>","storyDate":"YYYY-MM-DD","detailed":true,"points":[{"quote":"...","sourceName":"...","url":"..."}],"analysis":{...only if detailed:true...}}]}
@@ -572,6 +585,54 @@ async function generateDispatchFromSources(config, dateStr, session, materialBlo
   const partial = res.candidates?.[0]?.finishReason === 'MAX_TOKENS';
   const parsed = extractJSON(text);
   return { topics: parsed.topics || [], partial };
+}
+
+// Safety net for the coverage requirement above — the main generation call
+// is a single pass and can still drop a supplied (gov)/(pdf) item despite
+// being told not to. Checks which gathered items never appear in any
+// topic's points and, if any are missing, makes one more free Gemini call
+// to turn just that leftover material into additional topics, appended to
+// the end. Runs regardless of whether Claude or Gemini did the main
+// generation — always on Gemini's free tier since this is a bounded,
+// mechanical fill-in, not core generation quality.
+async function fillMissingCoverage(topics, materialItems, dateStr, session) {
+  const coverable = materialItems.filter(it => it.kind === 'gov' || it.kind === 'pdf');
+  if (!coverable.length) return topics;
+
+  const usedUrls = new Set();
+  const usedNames = new Set();
+  for (const t of topics) for (const p of t.points || []) {
+    if (p.url) usedUrls.add(p.url);
+    usedNames.add(p.sourceName);
+  }
+  const missing = coverable.filter(it => it.url ? !usedUrls.has(it.url) : !usedNames.has(it.sourceName));
+  if (!missing.length) return topics;
+
+  const materialBlock = missing
+    .map(it => `--- SOURCE (${it.kind}): ${it.sourceName}${it.url ? ` (${it.url})` : ''} ---\n${it.text}`)
+    .join('\n\n');
+  const prompt = `The following government-source and/or uploaded-PDF material was gathered for a geopolitical briefing but didn't make it into the initial draft. This material must always be represented, even if minor — turn each distinct item below into its own additional topic.
+
+${materialBlock}
+
+For each: "thread" (2-4 word tag), "headline" (<12 words), "topicId" (best-fitting from: middle_east_war, us_china, energy_geo, india_us_strategic, us_india_trade, india_diplomacy, us_indo_pacific, tech_trade_supply, russia_ukraine_eu, conflict_updates, eu_us_policy, official_stmts — or "extra" if none fit), "storyDate" (ISO date, from the material if stated else ${dateStr}), "points" (1-3 quotes, each with "quote" verbatim from the text, "sourceName", and "url" copied exactly if the source had one, omitted otherwise). (pdf) items are the reader's highest-priority, paywalled, personally-obtained sources — lean toward marking them "detailed":true with a full "analysis" object unless clearly trivial. (gov) items get "detailed":true only if genuinely significant (major policy shift, escalation, market-moving); otherwise "detailed":false.
+
+Respond with ONLY valid JSON, no markdown fences:
+{"topics":[{"thread":"...","headline":"...","topicId":"...","storyDate":"YYYY-MM-DD","detailed":false,"points":[{"quote":"...","sourceName":"...","url":"..."}]}]}
+Never use straight double-quotes inside string values.`;
+
+  try {
+    const res = await genai.models.generateContent({
+      model: GEMINI_MODEL,
+      contents: prompt,
+      config: { maxOutputTokens: GEMINI_DAILY_MAX_TOKENS },
+    });
+    const parsed = extractJSON(res.text || '');
+    return [...topics, ...(parsed.topics || [])];
+  } catch (e) {
+    logError('fillMissingCoverage', e);
+    return topics; // best-effort — a failure here shouldn't fail the whole request
+  }
 }
 
 /* ============================================================
@@ -702,7 +763,8 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
     const hasSuppliedSources = sources && (
       (sources.urls && sources.urls.length) ||
       (sources.govUrls && sources.govUrls.length) ||
-      (sources.pdfs && sources.pdfs.length)
+      (sources.pdfs && sources.pdfs.length) ||
+      (sources.articles && sources.articles.length)
     );
 
     let rawTopics, partial, sanitized, sanitizeOpts, pdfArchive = [];
@@ -713,6 +775,7 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
       sanitizeOpts = { enforceApprovedDomains: false, validUrls: new Set(items.filter(it => it.url).map(it => it.url)) };
       ({ topics: rawTopics, partial } = await generateDispatchFromSources(config, dateStr, session, materialBlock));
       if (!rawTopics.length) return res.status(502).json({ error: 'No topics could be drawn from the supplied sources.' });
+      rawTopics = await fillMissingCoverage(rawTopics, items, dateStr, session);
       sanitized = await sanitizePoints(rawTopics, sanitizeOpts);
     } else {
       ({ topics: rawTopics, partial } = await generateDispatch(config, dateStr, session));

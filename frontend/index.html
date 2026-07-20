@@ -141,13 +141,12 @@ button{font-family:inherit;cursor:pointer;}
         <label>Article URLs (one per line — paywalled or open, fetched directly)</label>
         <textarea id="srcUrls" rows="3" placeholder="https://www.wsj.com/articles/..."></textarea>
         <label>Government/official site URLs (one per line — recent press releases/speeches, last 72h, fetched automatically)</label>
-        <textarea id="srcGovUrls" rows="7" placeholder="https://www.whitehouse.gov/briefing-room/">https://pib.gov.in/
+        <textarea id="srcGovUrls" rows="6" placeholder="https://www.whitehouse.gov/briefing-room/">https://pib.gov.in/
 https://www.mea.gov.in/press-releases.htm
 https://www.gov.uk/search/news-and-communications
 https://www.whitehouse.gov/briefing-room/
-https://in.ambafrance.org/-Economy-
-https://in.usembassy.gov/embassy-consulates/new-delhi/sections-offices/economic-section/</textarea>
-        <div style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim);margin-top:4px">Last two (France/US embassy economic sections) are a best guess for "France ECS" / "US Trade Sec" — please verify or replace with the actual URL.</div>
+https://in.ambafrance.org/-Economy-</textarea>
+        <div style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim);margin-top:4px">"US Trade Sec" removed — the guessed embassy URL was confirmed dead (404). Paste the correct URL here if you have it. "France ECS" (French Embassy economic section) is still an unverified guess.</div>
         <label>PDF uploads (for paywalled articles you've saved)</label>
         <input type="file" id="srcPdfs" accept="application/pdf" multiple>
         <div id="srcPdfUrls" style="margin-top:6px;display:flex;flex-direction:column;gap:4px"></div>
