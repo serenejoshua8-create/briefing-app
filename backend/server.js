@@ -93,6 +93,63 @@ async function createDriveDoc(title, htmlContent) {
   });
   return { id: res.data.id, url: res.data.webViewLink };
 }
+// Overwrites an existing Doc's content in place -- used so a day's Doc
+// stays a single, running document (one per date+session) rather than a
+// new file appearing every time a PDF gets analyzed or the dispatch
+// regenerates. The Doc's own edit history (File > Version history) still
+// shows every prior version, so nothing is actually lost by replacing it.
+async function updateDriveDoc(fileId, htmlContent) {
+  const driveWrite = await getDriveWriteClient();
+  const res = await driveWrite.files.update({
+    fileId,
+    media: { mimeType: 'text/html', body: htmlContent },
+    fields: 'id, webViewLink',
+  });
+  return { id: res.data.id, url: res.data.webViewLink };
+}
+// One Doc per (date, session) -- created the first time anything is saved
+// for that day/session, then edited in place after that (a PDF analyzed
+// later in the day updates the same Doc rather than creating another one).
+// The Doc's file ID is persisted on the briefings row itself (drive_file_id)
+// so later calls know whether to create or update.
+async function syncBriefingToDrive(record) {
+  const title = `${record.date} ${record.session === 'AM' ? 'Morning · 0700' : 'Evening · 2100'}`;
+  const html = recordToDriveHtml(record);
+  if (record.drive_file_id) {
+    try {
+      return await updateDriveDoc(record.drive_file_id, html);
+    } catch (e) {
+      logError('updateDriveDoc', e); // e.g. the Doc was deleted by hand -- fall through and create a fresh one instead of failing outright
+    }
+  }
+  return await createDriveDoc(title, html);
+}
+function recordToDriveHtml(record) {
+  const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const v = record.verify || {};
+  const stamp = v.clean ? 'verified' : `fixed ${v.fixed || 0} / dropped ${v.dropped || 0}`;
+  const topicsHtml = (record.topics || []).map(t => {
+    const pointsHtml = (t.points || [])
+      .map(p => `<p>&#8220;${esc(p.quote)}&#8221; &mdash; ${esc(p.sourceName)}${p.url ? ` (<a href="${esc(p.url)}">link</a>)` : ''}</p>`)
+      .join('\n');
+    const a = t.analysis;
+    const analysisHtml = t.detailed && a ? `
+      <h3>What Happened</h3><p>${esc(a.whatHappened)}</p>
+      <h3>Right &amp; Wrong</h3><p>${esc(a.rightWrong)}</p>
+      <h3>Change from Before</h3><p>${esc(a.delta)}</p>
+      <h3>Forecast &middot; 24-72h</h3><p>${esc(a.forecast)}</p>
+      <h3>Outlook</h3><p>${esc(a.outlook)}</p>
+      <p><em>${esc(a.confidence)} &middot; ${a.confidencePct}% &middot; ${esc(a.confidenceReason)}</em></p>` : '';
+    return `<h2>${esc(t.headline)}</h2>${pointsHtml}${analysisHtml}<hr>`;
+  }).join('\n');
+  const pdfs = record.meta?.pdfArchive || [];
+  const pdfsHtml = pdfs.length ? `<h2>Source PDFs</h2>${pdfs.map(p => `<p><a href="${esc(p.storageUrl)}">${esc(p.sourceName || p.filename)}</a></p>`).join('\n')}` : '';
+  return `<html><body>
+    <p>${record.session === 'AM' ? 'Morning &middot; 0700' : 'Evening &middot; 2100'} / ${record.date} / ${stamp}</p>
+    ${topicsHtml}
+    ${pdfsHtml}
+  </body></html>`;
+}
 
 const CLAUDE_MODEL = 'claude-sonnet-5';
 const GEMINI_MODEL = 'gemini-2.5-flash';
@@ -957,6 +1014,7 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
     }
 
     const verified = await verifyDispatch(sanitized, dateStr, session, sanitizeOpts);
+    const { data: existing } = await supabase.from('briefings').select('drive_file_id').eq('date', dateStr).eq('session', session).single();
 
     const record = {
       date: dateStr,
@@ -966,7 +1024,17 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
       partial,
       verify: { fixed: verified.fixed, dropped: verified.dropped, clean: verified.clean },
       meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive },
+      drive_file_id: existing?.drive_file_id || null,
     };
+
+    // One Doc per day/session -- created the first time, edited in place
+    // after that (see syncBriefingToDrive).
+    try {
+      const driveDoc = await syncBriefingToDrive(record);
+      record.drive_file_id = driveDoc.id;
+    } catch (e) {
+      logError('syncBriefingToDrive:run', e); // most likely "not yet authorized" -- non-fatal
+    }
 
     const { error: upsertErr } = await supabase.from('briefings').upsert(record, { onConflict: 'date,session' });
     if (upsertErr) return res.status(500).json({ error: upsertErr.message });
@@ -999,6 +1067,7 @@ app.post('/api/briefing/submit', requireSecret, async (req, res) => {
     const { data: cfgRow } = await supabase.from('app_config').select('*').eq('id', 1).single();
     const config = { topics: cfgRow?.topics || [], extraTopics: cfgRow?.extra_topics || '' };
     const dropped = rawTopics.length - sanitized.length;
+    const { data: existing } = await supabase.from('briefings').select('drive_file_id').eq('date', dateStr).eq('session', session).single();
 
     const record = {
       date: dateStr,
@@ -1008,7 +1077,17 @@ app.post('/api/briefing/submit', requireSecret, async (req, res) => {
       partial: !!partial,
       verify: { fixed: 0, dropped, clean: dropped === 0, mode: 'claude-direct' },
       meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive: pdfArchive || [] },
+      drive_file_id: existing?.drive_file_id || null,
     };
+
+    // One Doc per day/session -- created the first time, edited in place
+    // after that (see syncBriefingToDrive).
+    try {
+      const driveDoc = await syncBriefingToDrive(record);
+      record.drive_file_id = driveDoc.id;
+    } catch (e) {
+      logError('syncBriefingToDrive:submit', e); // most likely "not yet authorized" -- non-fatal
+    }
 
     const { error: upsertErr } = await supabase.from('briefings').upsert(record, { onConflict: 'date,session' });
     if (upsertErr) return res.status(500).json({ error: upsertErr.message });
@@ -1019,27 +1098,6 @@ app.post('/api/briefing/submit', requireSecret, async (req, res) => {
     res.status(500).json({ error: e.message || String(e) });
   }
 });
-
-function topicToDriveHtml(topic, dateStr, session) {
-  const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  const pointsHtml = (topic.points || [])
-    .map(p => `<p>&#8220;${esc(p.quote)}&#8221; &mdash; ${esc(p.sourceName)}${p.url ? ` (<a href="${esc(p.url)}">link</a>)` : ''}</p>`)
-    .join('\n');
-  const a = topic.analysis;
-  const analysisHtml = a ? `
-    <h3>What Happened</h3><p>${esc(a.whatHappened)}</p>
-    <h3>Right &amp; Wrong</h3><p>${esc(a.rightWrong)}</p>
-    <h3>Change from Before</h3><p>${esc(a.delta)}</p>
-    <h3>Forecast &middot; 24-72h</h3><p>${esc(a.forecast)}</p>
-    <h3>Outlook</h3><p>${esc(a.outlook)}</p>
-    <p><em>${esc(a.confidence)} &middot; ${a.confidencePct}% &middot; ${esc(a.confidenceReason)}</em></p>` : '';
-  return `<html><body>
-    <p>${session === 'AM' ? 'Morning &middot; 0700' : 'Evening &middot; 2100'} / ${dateStr} / instant PDF analysis</p>
-    <h1>${esc(topic.headline)}</h1>
-    ${pointsHtml}
-    ${analysisHtml}
-  </body></html>`;
-}
 
 // Dashboard "analyze on upload" flow: one PDF in, one topic out, merged into
 // today's session record immediately -- doesn't wait on (or get lost to a
@@ -1087,20 +1145,12 @@ app.post('/api/pdf/analyze', requireSecret, async (req, res) => {
       logError('uploadPdfToStorage:instant', e); // archiving failure shouldn't block the analysis result
     }
 
-    let driveDoc = null;
-    try {
-      driveDoc = await createDriveDoc(`${dateStr} ${session} — ${topic.headline}`, topicToDriveHtml(topic, dateStr, session));
-    } catch (e) {
-      logError('createDriveDoc:instant', e); // most likely "not yet authorized" -- non-fatal, everything else still succeeds
-    }
-
-    const pdfEntry = { filename, sourceName, storageUrl, driveDocUrl: driveDoc?.url || null };
-
     const { data: existing } = await supabase.from('briefings').select('*').eq('date', dateStr).eq('session', session).single();
     const { data: cfgRow } = await supabase.from('app_config').select('*').eq('id', 1).single();
     const config = { topics: cfgRow?.topics || [], extraTopics: cfgRow?.extra_topics || '' };
 
-    const record = existing
+    const pdfEntry = { filename, sourceName, storageUrl };
+    let record = existing
       ? {
           ...existing,
           topics: [...existing.topics, topic],
@@ -1116,6 +1166,17 @@ app.post('/api/pdf/analyze', requireSecret, async (req, res) => {
           verify: { fixed: 0, dropped: 0, clean: true, mode: 'pdf-instant' },
           meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive: [pdfEntry] },
         };
+
+    // One Doc per day/session -- this PDF's topic gets folded into that same
+    // Doc (created fresh the first time, edited in place after that) rather
+    // than spawning a new Doc every time a PDF is analyzed.
+    let driveDoc = null;
+    try {
+      driveDoc = await syncBriefingToDrive(record);
+      record.drive_file_id = driveDoc.id;
+    } catch (e) {
+      logError('syncBriefingToDrive:instant', e); // most likely "not yet authorized" -- non-fatal, everything else still succeeds
+    }
 
     const { error: upsertErr } = await supabase.from('briefings').upsert(record, { onConflict: 'date,session' });
     if (upsertErr) return res.status(500).json({ error: upsertErr.message });
