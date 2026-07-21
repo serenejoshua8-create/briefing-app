@@ -46,3 +46,12 @@ create table if not exists drive_sync_log (
   action text not null check (action in ('read','write')),
   synced_at timestamptz default now()
 );
+
+-- Stores the refresh token from the one-time Google OAuth consent flow
+-- (GET /api/auth/google), so the backend can create real Google Docs in a
+-- personal Drive folder -- something the read-only service account can't do.
+create table if not exists oauth_tokens (
+  provider text primary key,
+  refresh_token text not null,
+  updated_at timestamptz default now()
+);

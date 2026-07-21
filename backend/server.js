@@ -51,7 +51,48 @@ const driveAuth = new google.auth.GoogleAuth({
   credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_KEY || '{}'),
   scopes: ['https://www.googleapis.com/auth/drive'],
 });
-const drive = google.drive({ version: 'v3', auth: driveAuth });
+const drive = google.drive({ version: 'v3', auth: driveAuth }); // read-only in practice -- service accounts have no Drive storage quota of their own, so they can read shared files but can't create new ones in a personal (non-Shared-Drive) folder.
+
+// Separate OAuth2 client, authorized as the actual Google account that owns
+// the Drive folder -- the only way to CREATE files in a personal My Drive,
+// since a service account can't (see above). Requires a one-time consent
+// flow (visit GET /api/auth/google) to obtain a refresh token, which is then
+// persisted in Supabase (oauth_tokens table) and reused for every future
+// write, refreshing its access token automatically as needed.
+const oauth2Client = new google.auth.OAuth2(
+  process.env.GOOGLE_OAUTH_CLIENT_ID,
+  process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+  process.env.GOOGLE_OAUTH_REDIRECT_URI
+);
+async function getDriveWriteClient() {
+  const { data, error } = await supabase.from('oauth_tokens').select('refresh_token').eq('provider', 'google').single();
+  if (error || !data?.refresh_token) {
+    throw new Error('No Google OAuth refresh token on file -- visit GET /api/auth/google once to authorize.');
+  }
+  const client = new google.auth.OAuth2(
+    process.env.GOOGLE_OAUTH_CLIENT_ID,
+    process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+    process.env.GOOGLE_OAUTH_REDIRECT_URI
+  );
+  client.setCredentials({ refresh_token: data.refresh_token });
+  return google.drive({ version: 'v3', auth: client });
+}
+// Creates a real Google Doc (not just an uploaded file) by giving Drive HTML
+// to convert -- this is what makes it open/edit like a normal Doc rather
+// than a generic binary attachment.
+async function createDriveDoc(title, htmlContent) {
+  const driveWrite = await getDriveWriteClient();
+  const res = await driveWrite.files.create({
+    requestBody: {
+      name: title,
+      mimeType: 'application/vnd.google-apps.document',
+      parents: [process.env.GOOGLE_DRIVE_FOLDER_ID],
+    },
+    media: { mimeType: 'text/html', body: htmlContent },
+    fields: 'id, webViewLink',
+  });
+  return { id: res.data.id, url: res.data.webViewLink };
+}
 
 const CLAUDE_MODEL = 'claude-sonnet-5';
 const GEMINI_MODEL = 'gemini-2.5-flash';
@@ -66,6 +107,23 @@ const DAILY_MAX_TOKENS = 16000;
 // so it needs a much larger budget than Claude to finish a 12-topic dispatch
 // without getting cut off mid-JSON.
 const GEMINI_DAILY_MAX_TOKENS = 32768;
+
+// Gemini's free tier throws 429 (quota) and occasionally 503 (overloaded).
+// 503 is transient and worth a short backoff-retry; 429 on a per-minute cap
+// also clears within seconds, but a per-day cap won't — retrying still costs
+// nothing since it fails fast either way, so it's applied uniformly here.
+async function generateContentWithRetry(params, { retries = 2, baseDelayMs = 1500 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await genai.models.generateContent(params);
+    } catch (e) {
+      const status = Number(String(e?.message || '').match(/status:\s*(\d{3})/)?.[1]);
+      const isRetryable = status === 429 || status === 503;
+      if (!isRetryable || attempt >= retries) throw e;
+      await new Promise(r => setTimeout(r, baseDelayMs * Math.pow(2, attempt)));
+    }
+  }
+}
 
 /* ============================================================
    Auth guard — require a shared secret header on mutating routes.
@@ -452,7 +510,7 @@ Title: ${title}
 Publication: ${sourceName || '(unknown, infer from the title/content if possible)'}
 
 Respond with ONLY the URL on its own, nothing else — no markdown, no explanation. If you cannot find a confident exact match (not just the publication's homepage), respond with exactly: NONE`;
-    const res = await genai.models.generateContent({
+    const res = await generateContentWithRetry({
       model: GEMINI_MODEL,
       contents: prompt,
       config: { tools: [{ googleSearch: {} }], maxOutputTokens: 200 },
@@ -464,6 +522,61 @@ Respond with ONLY the URL on its own, nothing else — no markdown, no explanati
     logError('lookupArticleUrl', e);
     return null;
   }
+}
+
+// OpenRouter (openrouter.ai) — used only for instant PDF-upload analysis, on
+// a free-tier model. Deliberately a separate provider/key from the Gemini
+// calls above: if Gemini's own daily quota is exhausted, this path is
+// unaffected, and vice versa.
+const HAS_OPENROUTER = !!process.env.OPENROUTER_API_KEY;
+// Confirmed working + free via a live test call. Deliberately NOT one of
+// OpenRouter's Gemini-family free models -- those route through Google AI
+// Studio infra and would share the same daily quota as GEMINI_API_KEY above,
+// defeating the point of using a separate provider.
+const OPENROUTER_MODEL = 'nvidia/nemotron-3-nano-30b-a3b:free';
+async function callOpenRouter(prompt, { retries = 2, baseDelayMs = 1500 } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: OPENROUTER_MODEL,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      return data.choices?.[0]?.message?.content || '';
+    }
+    const isRetryable = res.status === 429 || res.status === 503;
+    if (!isRetryable || attempt >= retries) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`OpenRouter ${res.status}: ${body.slice(0, 300)}`);
+    }
+    await new Promise(r => setTimeout(r, baseDelayMs * Math.pow(2, attempt)));
+  }
+}
+
+// Analyzes exactly one reader-supplied PDF into a single topic entry, on
+// OpenRouter's free tier -- a small, bounded call (one PDF in, one topic
+// out), used for the dashboard's "analyze on upload" flow so a single PDF
+// doesn't have to wait on (or get lost to a failure in) the full multi-topic
+// dispatch generation, and doesn't share Gemini's own daily quota.
+async function analyzePdfInstant(text, sourceName, url, dateStr) {
+  const prompt = `You are writing ONE topic entry for a geopolitical/economic briefing, based solely on this single paywalled/uploaded source the reader personally supplied. Treat it as high-priority, reader-supplied material -- lean toward "detailed":true with a full analysis unless the content is clearly trivial.
+
+--- SOURCE: ${sourceName}${url ? ` (${url})` : ''} ---
+${text}
+
+Respond with ONLY valid JSON, no markdown fences, no commentary:
+{"thread":"2-4 word tag","headline":"<12 words","topicId":"best-fitting from: middle_east_war, us_china, energy_geo, india_us_strategic, us_india_trade, india_diplomacy, us_indo_pacific, tech_trade_supply, russia_ukraine_eu, conflict_updates, eu_us_policy, official_stmts -- or \\"extra\\" if none fit","storyDate":"YYYY-MM-DD (from the article if stated, else ${dateStr})","detailed":true,"points":[{"quote":"10-30 word VERBATIM excerpt copied exactly from the text above","sourceName":"${sourceName}","url":${url ? `"${url}"` : 'null'}}],"analysis":{"whatHappened":"...","rightWrong":"...","delta":"...","forecast":"...","outlook":"...","confidence":"High|Medium|Low","confidencePct":0,"confidenceReason":"..."}}
+Provide 1-3 points, all quoting this same source. Never use a straight double-quote (") inside a string value -- use single quotes instead.`;
+
+  const text_ = await callOpenRouter(prompt);
+  return extractJSON(text_);
 }
 
 async function assembleSourceMaterial(sources, dateStr, session) {
@@ -851,6 +964,106 @@ app.post('/api/briefing/submit', requireSecret, async (req, res) => {
   }
 });
 
+function topicToDriveHtml(topic, dateStr, session) {
+  const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const pointsHtml = (topic.points || [])
+    .map(p => `<p>&#8220;${esc(p.quote)}&#8221; &mdash; ${esc(p.sourceName)}${p.url ? ` (<a href="${esc(p.url)}">link</a>)` : ''}</p>`)
+    .join('\n');
+  const a = topic.analysis;
+  const analysisHtml = a ? `
+    <h3>What Happened</h3><p>${esc(a.whatHappened)}</p>
+    <h3>Right &amp; Wrong</h3><p>${esc(a.rightWrong)}</p>
+    <h3>Change from Before</h3><p>${esc(a.delta)}</p>
+    <h3>Forecast &middot; 24-72h</h3><p>${esc(a.forecast)}</p>
+    <h3>Outlook</h3><p>${esc(a.outlook)}</p>
+    <p><em>${esc(a.confidence)} &middot; ${a.confidencePct}% &middot; ${esc(a.confidenceReason)}</em></p>` : '';
+  return `<html><body>
+    <p>${session === 'AM' ? 'Morning &middot; 0700' : 'Evening &middot; 2100'} / ${dateStr} / instant PDF analysis</p>
+    <h1>${esc(topic.headline)}</h1>
+    ${pointsHtml}
+    ${analysisHtml}
+  </body></html>`;
+}
+
+// Dashboard "analyze on upload" flow: one PDF in, one topic out, merged into
+// today's session record immediately -- doesn't wait on (or get lost to a
+// failure in) the full multi-topic dispatch generation. Runs entirely on
+// OpenRouter's free tier for the analysis itself (a separate quota pool
+// from the Gemini key used elsewhere), plus a small existing Gemini call to
+// look up the article's original URL. Also archives the PDF to Supabase
+// Storage and, if Google OAuth has been authorized (see /api/auth/google),
+// writes a matching Google Doc to Drive.
+app.post('/api/pdf/analyze', requireSecret, async (req, res) => {
+  if (!HAS_OPENROUTER) return res.status(400).json({ error: 'OPENROUTER_API_KEY is not configured on the server.' });
+  const { session, filename, base64, sourceUrl } = req.body;
+  if (session !== 'AM' && session !== 'PM') return res.status(400).json({ error: 'session must be AM or PM' });
+  if (!base64) return res.status(400).json({ error: 'base64 PDF data is required' });
+
+  try {
+    const dateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
+    const extracted = await extractPdfText(base64, filename);
+
+    let url = sourceUrl || null;
+    if (!url) url = await lookupArticleUrl(extracted.sourceName, filename);
+
+    let rawTopic;
+    try {
+      rawTopic = await analyzePdfInstant(extracted.text, extracted.sourceName, url, dateStr);
+    } catch (e) {
+      logError('analyzePdfInstant', e);
+      return res.status(502).json({ error: `Could not analyze this PDF right now (${e.message || 'OpenRouter error'}) -- try again shortly.` });
+    }
+
+    const topic = sanitizeTopicPoints(rawTopic, { enforceApprovedDomains: false });
+    if (!topic.points.length) return res.status(400).json({ error: 'Model produced no valid quoted points for this PDF.' });
+
+    let storageUrl = null;
+    try {
+      storageUrl = await uploadPdfToStorage(base64, filename, dateStr, session);
+    } catch (e) {
+      logError('uploadPdfToStorage:instant', e); // archiving failure shouldn't block the analysis result
+    }
+
+    let driveDoc = null;
+    try {
+      driveDoc = await createDriveDoc(`${dateStr} ${session} — ${topic.headline}`, topicToDriveHtml(topic, dateStr, session));
+    } catch (e) {
+      logError('createDriveDoc:instant', e); // most likely "not yet authorized" -- non-fatal, everything else still succeeds
+    }
+
+    const pdfEntry = { filename, sourceName: extracted.sourceName, storageUrl, driveDocUrl: driveDoc?.url || null };
+
+    const { data: existing } = await supabase.from('briefings').select('*').eq('date', dateStr).eq('session', session).single();
+    const { data: cfgRow } = await supabase.from('app_config').select('*').eq('id', 1).single();
+    const config = { topics: cfgRow?.topics || [], extraTopics: cfgRow?.extra_topics || '' };
+
+    const record = existing
+      ? {
+          ...existing,
+          topics: [...existing.topics, topic],
+          meta: { ...existing.meta, pdfArchive: [...(existing.meta?.pdfArchive || []), pdfEntry] },
+          generated_at: new Date().toISOString(),
+        }
+      : {
+          date: dateStr,
+          session,
+          generated_at: new Date().toISOString(),
+          topics: [topic],
+          partial: false,
+          verify: { fixed: 0, dropped: 0, clean: true, mode: 'pdf-instant' },
+          meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive: [pdfEntry] },
+        };
+
+    const { error: upsertErr } = await supabase.from('briefings').upsert(record, { onConflict: 'date,session' });
+    if (upsertErr) return res.status(500).json({ error: upsertErr.message });
+
+    res.json({ record, topic, driveDoc });
+  } catch (e) {
+    logError('POST /api/pdf/analyze', e);
+    res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
 app.get('/api/briefing/:date/:session', async (req, res) => {
   const { date, session } = req.params;
   const { data, error } = await supabase.from('briefings').select('*').eq('date', date).eq('session', session).single();
@@ -912,6 +1125,40 @@ Respond with ONLY valid JSON: {"narrative":"...","topStories":[{"title":"...","s
   } catch (e) {
     logError('POST /api/weekly/run', e);
     res.status(500).json({ error: e.message || String(e) });
+  }
+});
+
+/* ============================================================
+   Routes — Google OAuth (one-time consent to allow real Drive writes)
+   Visit GET /api/auth/google once in a browser, signed into the Google
+   account that owns the target Drive folder, and approve access. The
+   resulting refresh token is stored in Supabase and reused indefinitely
+   after that -- this route doesn't need to be visited again unless the
+   token is revoked.
+   ============================================================ */
+app.get('/api/auth/google', (req, res) => {
+  const url = oauth2Client.generateAuthUrl({
+    access_type: 'offline', // required to receive a refresh_token, not just a short-lived access token
+    prompt: 'consent', // forces Google to reissue a refresh_token even if this account already authorized before
+    scope: ['https://www.googleapis.com/auth/drive.file'], // narrow scope: only files this app creates, not full Drive access
+  });
+  res.redirect(url);
+});
+app.get('/api/auth/google/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error) return res.status(400).send(`Authorization failed: ${error}`);
+  try {
+    const { tokens } = await oauth2Client.getToken(code);
+    if (!tokens.refresh_token) {
+      return res.status(400).send('Google did not return a refresh token. Revoke this app\'s access at myaccount.google.com/permissions and try again (the "prompt=consent" step should force a fresh one).');
+    }
+    const { error: upsertErr } = await supabase.from('oauth_tokens')
+      .upsert({ provider: 'google', refresh_token: tokens.refresh_token, updated_at: new Date().toISOString() }, { onConflict: 'provider' });
+    if (upsertErr) return res.status(500).send(`Saved token exchange succeeded but DB write failed: ${upsertErr.message}`);
+    res.send('Google Drive access authorized. You can close this tab.');
+  } catch (e) {
+    logError('GET /api/auth/google/callback', e);
+    res.status(500).send(`Token exchange failed: ${e.message || String(e)}`);
   }
 });
 

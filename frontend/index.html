@@ -323,9 +323,34 @@ function linesOf(id){
 el('srcPdfs').addEventListener('change', () => {
   const files = Array.from(el('srcPdfs').files || []);
   el('srcPdfUrls').innerHTML = files.map((f, i) => `
-    <input type="text" class="pdf-url-input" data-index="${i}" placeholder="Original article URL for &quot;${esc(f.name)}&quot; (optional)" style="background:var(--ink-2);border:1px solid var(--line-dark);color:var(--paper-text);padding:6px 8px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">
+    <div style="display:flex;gap:6px;align-items:center;">
+      <input type="text" class="pdf-url-input" data-index="${i}" placeholder="Original article URL for &quot;${esc(f.name)}&quot; (optional)" style="flex:1;background:var(--ink-2);border:1px solid var(--line-dark);color:var(--paper-text);padding:6px 8px;border-radius:4px;font-family:var(--font-mono);font-size:11px;">
+      <span class="pdf-status" data-index="${i}" style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim);white-space:nowrap;">queued…</span>
+    </div>
   `).join('');
+  // Instant analysis: fires per-file the moment it's picked, independent of
+  // the Run Briefing button -- so a PDF's summary lands in today's briefing
+  // right away, and isn't lost if the full dispatch generation later fails.
+  files.forEach((f, i) => analyzePdfOnUpload(f, i));
 });
+async function analyzePdfOnUpload(file, index){
+  const statusEl = () => document.querySelector(`.pdf-status[data-index="${index}"]`);
+  const urlInput = () => document.querySelector(`.pdf-url-input[data-index="${index}"]`);
+  try{
+    if(statusEl()) statusEl().textContent = 'analyzing…';
+    const base64 = await fileToBase64(file);
+    const body = { session: state.session, filename: file.name, base64, sourceUrl: urlInput()?.value.trim() || undefined };
+    const result = await api('/api/pdf/analyze', { method:'POST', body: JSON.stringify(body) });
+    if(statusEl()) statusEl().textContent = `✓ added${result.driveDoc ? ' + Drive' : ''}`;
+    // If we're currently looking at the same day/session this landed in, refresh the view.
+    if(result.record && result.record.date === todayIST() && result.record.session === state.session){
+      state.current = result.record;
+      el('briefingContent').innerHTML = sheetHtml(result.record, state.view);
+    }
+  }catch(e){
+    if(statusEl()) statusEl().textContent = `✗ ${e.message}`;
+  }
+}
 async function collectSources(){
   const urls = linesOf('srcUrls');
   const govUrls = linesOf('srcGovUrls');
