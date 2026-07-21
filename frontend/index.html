@@ -92,6 +92,17 @@ button{font-family:inherit;cursor:pointer;}
 .install-banner .dismiss{background:none;color:var(--ink-text-dim);}
 .sources-panel{border:1px solid var(--line-dark);border-radius:4px;padding:10px 14px;margin-bottom:14px;}
 .sources-panel summary{font-family:var(--font-mono);font-size:11px;color:var(--paper-text-dim);cursor:pointer;}
+.day-group{border:1px solid var(--line-dark);border-radius:6px;margin-bottom:10px;overflow:hidden;}
+.day-group summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;cursor:pointer;font-family:var(--font-mono);font-size:12px;color:var(--paper-text);background:var(--ink-2);}
+.day-group summary::-webkit-details-marker{display:none;}
+.day-group summary::before{content:'▸';display:inline-block;margin-right:8px;color:var(--paper-text-dim);transition:transform .15s;}
+.day-group[open] summary::before{transform:rotate(90deg);}
+.day-group summary .day-date{font-family:var(--font-display);font-size:15px;color:var(--paper-text);}
+.day-group summary .day-tags{display:flex;gap:6px;flex-wrap:wrap;}
+.day-group summary .day-tags span{border:1px solid var(--line-dark);padding:2px 7px;border-radius:3px;font-size:10px;text-transform:uppercase;color:var(--paper-text-dim);}
+.day-group-body{padding:14px;}
+.day-group-body .sheet{margin-bottom:12px;}
+.day-group-body .sheet:last-child{margin-bottom:0;}
 .sources-body{margin-top:12px;display:flex;flex-direction:column;gap:4px;}
 .sources-body label{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;color:var(--paper-text-dim);margin-top:8px;}
 .sources-body textarea{width:100%;background:var(--ink-2);border:1px solid var(--line-dark);color:var(--paper-text);padding:8px;border-radius:4px;font-family:var(--font-mono);font-size:12px;box-sizing:border-box;resize:vertical;}
@@ -381,8 +392,33 @@ async function loadArchive(){
   }catch(e){ state.archiveDrive = []; }
   renderArchive();
 }
+function groupByDay(records){
+  const byDate = new Map();
+  for(const r of records){
+    if(!byDate.has(r.date)) byDate.set(r.date, []);
+    byDate.get(r.date).push(r);
+  }
+  // Newest date first; within a day, AM before PM.
+  return Array.from(byDate.entries())
+    .sort((a,b) => b[0].localeCompare(a[0]))
+    .map(([date, sessions]) => [date, sessions.sort((a,b) => a.session.localeCompare(b.session))]);
+}
+function dayGroupHtml(date, sessions, view, index){
+  const sessionTags = sessions.map(r=>{
+    const v = r.verify||{};
+    return `<span>${r.session==='AM'?'0700':'2100'} · ${v.clean?'verified':'issues'}</span>`;
+  }).join('');
+  return `<details class="day-group"${index===0?' open':''}>
+    <summary>
+      <span class="day-date">${esc(date)}</span>
+      <span class="day-tags">${sessionTags}</span>
+    </summary>
+    <div class="day-group-body">${sessions.map(r=>sheetHtml(r, view)).join('')}</div>
+  </details>`;
+}
 function renderArchive(){
-  el('archiveDispatches').innerHTML = state.archiveDispatches.map(r=>sheetHtml(r, state.archView)).join('') || '<div class="empty">No dispatches yet.</div>';
+  const groups = groupByDay(state.archiveDispatches);
+  el('archiveDispatches').innerHTML = groups.map(([date, sessions], i)=>dayGroupHtml(date, sessions, state.archView, i)).join('') || '<div class="empty">No dispatches yet.</div>';
   el('archiveDrive').innerHTML = state.archiveDrive.map(f=>`
     <div class="drive-item">
       <span>${esc(f.name)} — ${new Date(f.modifiedTime).toLocaleDateString()}</span>
