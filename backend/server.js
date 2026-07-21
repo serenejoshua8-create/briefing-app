@@ -679,10 +679,18 @@ async function callOpenRouter(prompt, { retries = 2, baseDelayMs = 1500 } = {}) 
 // doesn't have to wait on (or get lost to a failure in) the full multi-topic
 // dispatch generation, and doesn't share Gemini's own daily quota.
 async function analyzePdfInstant(text, sourceName, url, dateStr) {
-  const prompt = `You are writing ONE topic entry for a geopolitical/economic briefing, based solely on this single paywalled/uploaded source the reader personally supplied. Treat it as high-priority, reader-supplied material -- lean toward "detailed":true with a full analysis unless the content is clearly trivial.
+  const prompt = `You are a senior geopolitical and economic intelligence analyst writing ONE topic entry for a briefing, based solely on this single paywalled/uploaded source the reader personally saved and supplied. This is the reader's highest-priority material -- it's paywalled content they went out of their way to obtain, so it always gets "detailed":true with a full, substantive analysis (never a thin one-liner), unless the content is genuinely trivial.
 
 --- SOURCE: ${sourceName}${url ? ` (${url})` : ''} ---
 ${text}
+
+The "analysis" object is the reader's actual reason for reading -- go well beyond restating the source material:
+- "whatHappened": 3-5 sentences giving full context, not a one-line summary -- who did what, when, why it matters, and any details from the source that add real texture.
+- "rightWrong": assess what's actually significant versus noise here, and where the official/reported framing likely diverges from the underlying reality -- don't just restate a quote as "right" or "wrong".
+- "delta": specifically what changed from the prior understanding of this situation -- what's new here versus what was already known/expected.
+- "forecast": a concrete, falsifiable prediction for the next 24-72h, with a real confidence level -- not a vague hedge like "developments will continue".
+- "outlook": why this matters for the reader's broader picture (connect it to other geopolitical/economic threads where relevant), not just a restatement of the forecast.
+Each field should be genuinely analytical prose (2+ sentences where the field calls for it), matching the depth of a professional intelligence briefing -- not a shallow summary of the article.
 
 Respond with ONLY valid JSON, no markdown fences, no commentary:
 {"thread":"2-4 word tag","headline":"<12 words","topicId":"best-fitting from: middle_east_war, us_china, energy_geo, india_us_strategic, us_india_trade, india_diplomacy, us_indo_pacific, tech_trade_supply, russia_ukraine_eu, conflict_updates, eu_us_policy, official_stmts -- or \\"extra\\" if none fit","storyDate":"YYYY-MM-DD (from the article if stated, else ${dateStr})","detailed":true,"points":[{"quote":"10-30 word VERBATIM excerpt copied exactly from the text above","sourceName":"${sourceName}","url":${url ? `"${url}"` : 'null'}}],"analysis":{"whatHappened":"...","rightWrong":"...","delta":"...","forecast":"...","outlook":"...","confidence":"High|Medium|Low","confidencePct":0,"confidenceReason":"..."}}
