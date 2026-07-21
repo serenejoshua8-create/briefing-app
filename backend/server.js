@@ -435,7 +435,14 @@ async function extractPdfText(base64, label) {
   const parser = new PDFParse({ data: Buffer.from(base64, 'base64') });
   try {
     const result = await parser.getText();
-    return { sourceName: label || 'Uploaded PDF', url: null, text: truncateText(result.text.replace(/\s+/g, ' ').trim(), MAX_SOURCE_CHARS) };
+    // The article's real headline is reliably the first substantial line of
+    // the raw (pre-whitespace-collapse) text -- and it's often a better
+    // search query than the PDF's filename, which can drift slightly from
+    // the true headline (browser save dialogs sometimes truncate/reword it)
+    // in ways small enough to still look right but large enough to break a
+    // search-engine exact-match lookup.
+    const guessedTitle = result.text.split('\n').map(l => l.trim()).find(l => l.length > 10 && l.length < 200) || null;
+    return { sourceName: label || 'Uploaded PDF', url: null, guessedTitle, text: truncateText(result.text.replace(/\s+/g, ' ').trim(), MAX_SOURCE_CHARS) };
   } finally {
     await parser.destroy();
   }
@@ -467,6 +474,17 @@ function resolveSourceNameFromUrl(url) {
   } catch {
     return null;
   }
+}
+// Browsers name a saved/printed article PDF after the page's own <title>,
+// which for virtually every news site is "<Headline> - <Publication>" -- so
+// the filename itself is a much cleaner (title, publication) pair to search
+// with than the raw filename used for both, which is what was happening
+// before this and produced garbage lookups.
+function parseFilenameTitlePublication(filename) {
+  const base = (filename || '').replace(/\.pdf$/i, '').trim();
+  const idx = base.lastIndexOf(' - ');
+  if (idx === -1) return { title: base, publication: null };
+  return { title: base.slice(0, idx).trim(), publication: base.slice(idx + 3).trim() };
 }
 
 // Uploaded PDFs are kept in Supabase Storage (not just used transiently for
@@ -533,19 +551,26 @@ async function fetchGovRecentItems(baseUrl, sinceHours = GOV_RECENCY_HOURS) {
 // funding. Falls back to no URL (rendered as plain text) if unconfident.
 async function lookupArticleUrl(title, sourceName) {
   try {
-    const prompt = `Find the exact URL of this news article.
+    // A strict "respond with ONLY the URL, else say NONE" instruction made
+    // the model bail out to NONE far too often even when its own search
+    // grounding had actually found the right article (confirmed live: the
+    // exact same search succeeded once allowed to reason in prose first,
+    // then answer). Asking for a normal sentence and pulling the URL out of
+    // it afterward is much more reliable than demanding a bare URL up front.
+    const prompt = `Search for this exact news article and tell me its exact URL.
 Title: ${title}
 Publication: ${sourceName || '(unknown, infer from the title/content if possible)'}
 
-Respond with ONLY the URL on its own, nothing else — no markdown, no explanation. If you cannot find a confident exact match (not just the publication's homepage), respond with exactly: NONE`;
+If you cannot find a confident exact match for this specific article (a real article URL with a path/slug, not just the publication's homepage or a section page), say so clearly instead of guessing.`;
     const res = await generateContentWithRetry({
       model: GEMINI_MODEL,
       contents: prompt,
-      config: { tools: [{ googleSearch: {} }], maxOutputTokens: 200 },
+      config: { tools: [{ googleSearch: {} }], maxOutputTokens: 300 },
     });
     const text = (res.text || '').trim();
-    if (!text || text === 'NONE' || !looksLikeArticleUrl(text)) return null;
-    return text;
+    const found = extractUrlFromPdfText(text); // same "grab the first plausible URL" regex works fine on prose too
+    if (!found || !looksLikeArticleUrl(found)) return null;
+    return found;
   } catch (e) {
     logError('lookupArticleUrl', e);
     return null;
@@ -1033,10 +1058,13 @@ app.post('/api/pdf/analyze', requireSecret, async (req, res) => {
 
     // Priority: an explicitly-typed URL, then whatever URL the PDF's own
     // text already contains (print-to-PDF saves almost always have this),
-    // then a last-resort Gemini web-search guess.
+    // then a Gemini web-search lookup using the (title, publication) pair
+    // parsed from the filename -- much cleaner input than the raw filename
+    // used for both fields, which is what made this lookup unreliable before.
+    const { title: parsedTitle, publication: parsedPublication } = parseFilenameTitlePublication(filename);
     let url = sourceUrl || extractUrlFromPdfText(extracted.text);
-    if (!url) url = await lookupArticleUrl(extracted.sourceName, filename);
-    const sourceName = resolveSourceNameFromUrl(url) || extracted.sourceName;
+    if (!url) url = await lookupArticleUrl(extracted.guessedTitle || parsedTitle, parsedPublication);
+    const sourceName = resolveSourceNameFromUrl(url) || parsedPublication || extracted.sourceName;
 
     let rawTopic;
     try {
