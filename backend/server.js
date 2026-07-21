@@ -550,31 +550,34 @@ async function fetchGovRecentItems(baseUrl, sinceHours = GOV_RECENCY_HOURS) {
 // PDF, not an open-ended loop — so it stays at $0 regardless of Anthropic
 // funding. Falls back to no URL (rendered as plain text) if unconfident.
 async function lookupArticleUrl(title, sourceName) {
-  try {
-    // A strict "respond with ONLY the URL, else say NONE" instruction made
-    // the model bail out to NONE far too often even when its own search
-    // grounding had actually found the right article (confirmed live: the
-    // exact same search succeeded once allowed to reason in prose first,
-    // then answer). Asking for a normal sentence and pulling the URL out of
-    // it afterward is much more reliable than demanding a bare URL up front.
-    const prompt = `Search for this exact news article and tell me its exact URL.
+  // A strict "respond with ONLY the URL, else say NONE" instruction made the
+  // model bail out to NONE far too often even when its own search grounding
+  // had actually found the right article. Asking for a normal sentence and
+  // pulling the URL out of it afterward is much more reliable than demanding
+  // a bare URL up front. Even so, the same exact query can succeed on one
+  // attempt and fail on the next (confirmed live: identical requests back to
+  // back, one found it, one didn't) -- search grounding isn't deterministic,
+  // so this tries twice before giving up.
+  const prompt = `Search for this exact news article and tell me its exact URL.
 Title: ${title}
 Publication: ${sourceName || '(unknown, infer from the title/content if possible)'}
 
 If you cannot find a confident exact match for this specific article (a real article URL with a path/slug, not just the publication's homepage or a section page), say so clearly instead of guessing.`;
-    const res = await generateContentWithRetry({
-      model: GEMINI_MODEL,
-      contents: prompt,
-      config: { tools: [{ googleSearch: {} }], maxOutputTokens: 300 },
-    });
-    const text = (res.text || '').trim();
-    const found = extractUrlFromPdfText(text); // same "grab the first plausible URL" regex works fine on prose too
-    if (!found || !looksLikeArticleUrl(found)) return null;
-    return found;
-  } catch (e) {
-    logError('lookupArticleUrl', e);
-    return null;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const res = await generateContentWithRetry({
+        model: GEMINI_MODEL,
+        contents: prompt,
+        config: { tools: [{ googleSearch: {} }], maxOutputTokens: 300 },
+      });
+      const text = (res.text || '').trim();
+      const found = extractUrlFromPdfText(text); // same "grab the first plausible URL" regex works fine on prose too
+      if (found && looksLikeArticleUrl(found)) return found;
+    } catch (e) {
+      logError('lookupArticleUrl', e);
+    }
   }
+  return null;
 }
 
 // OpenRouter (openrouter.ai) — used only for instant PDF-upload analysis, on
