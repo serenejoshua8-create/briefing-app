@@ -441,6 +441,34 @@ async function extractPdfText(base64, label) {
   }
 }
 
+// Browser "Print to PDF" saves (the common way a reader captures a paywalled
+// article) usually embed the page's own URL as visible text -- in the
+// header/footer, or just from the page chrome getting captured. Pulling it
+// straight out of the extracted text is far more reliable than guessing via
+// a web search, and needs no user input at all.
+function extractUrlFromPdfText(text) {
+  const matches = text.match(/https?:\/\/[^\s"'()<>]+/g) || [];
+  if (!matches.length) return null;
+  // Prefer a URL on one of our known outlets over an unrelated one (share
+  // links, ad trackers, etc. sometimes also get captured in a print-to-PDF).
+  const known = matches.find(u => SOURCES.some(s => {
+    try { return new URL(u).hostname.replace(/^www\./, '').endsWith(s.url); } catch { return false; }
+  }));
+  return (known || matches[0]).replace(/[.,;:]+$/, '');
+}
+// Given a resolved article URL, prefer the proper outlet name from SOURCES
+// (e.g. "The New York Times") over a raw hostname or the uploaded filename.
+function resolveSourceNameFromUrl(url) {
+  if (!url) return null;
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    const match = SOURCES.find(s => host === s.url || host.endsWith('.' + s.url));
+    return match ? match.name : host;
+  } catch {
+    return null;
+  }
+}
+
 // Uploaded PDFs are kept in Supabase Storage (not just used transiently for
 // extraction) so the original file can be reopened from the Archive tab
 // later, even though the article's own URL may stay paywalled.
@@ -1003,12 +1031,16 @@ app.post('/api/pdf/analyze', requireSecret, async (req, res) => {
     const dateStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' });
     const extracted = await extractPdfText(base64, filename);
 
-    let url = sourceUrl || null;
+    // Priority: an explicitly-typed URL, then whatever URL the PDF's own
+    // text already contains (print-to-PDF saves almost always have this),
+    // then a last-resort Gemini web-search guess.
+    let url = sourceUrl || extractUrlFromPdfText(extracted.text);
     if (!url) url = await lookupArticleUrl(extracted.sourceName, filename);
+    const sourceName = resolveSourceNameFromUrl(url) || extracted.sourceName;
 
     let rawTopic;
     try {
-      rawTopic = await analyzePdfInstant(extracted.text, extracted.sourceName, url, dateStr);
+      rawTopic = await analyzePdfInstant(extracted.text, sourceName, url, dateStr);
     } catch (e) {
       logError('analyzePdfInstant', e);
       return res.status(502).json({ error: `Could not analyze this PDF right now (${e.message || 'OpenRouter error'}) -- try again shortly.` });
@@ -1031,7 +1063,7 @@ app.post('/api/pdf/analyze', requireSecret, async (req, res) => {
       logError('createDriveDoc:instant', e); // most likely "not yet authorized" -- non-fatal, everything else still succeeds
     }
 
-    const pdfEntry = { filename, sourceName: extracted.sourceName, storageUrl, driveDocUrl: driveDoc?.url || null };
+    const pdfEntry = { filename, sourceName, storageUrl, driveDocUrl: driveDoc?.url || null };
 
     const { data: existing } = await supabase.from('briefings').select('*').eq('date', dateStr).eq('session', session).single();
     const { data: cfgRow } = await supabase.from('app_config').select('*').eq('id', 1).single();
