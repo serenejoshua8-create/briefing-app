@@ -3,26 +3,26 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>0700 / 2100 — Briefing Room</title>
+<title>Daily Geopolitical Briefs V.3</title>
 <link rel="manifest" href="manifest.json">
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="icon-180.png">
-<meta name="theme-color" content="#10131B">
+<meta name="theme-color" content="#14152B">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="0700/2100">
+<meta name="apple-mobile-web-app-title" content="Geopolitical Briefs">
 
-<meta name="description" content="Daily Briefing App for Arun Singh — geopolitical and economic briefs delivered twice daily, at 7:00 AM and 9:00 PM.">
+<meta name="description" content="Daily Geopolitical Briefs V.3 for Arun Singh — geopolitical and economic briefs delivered twice daily, at 11:00 AM and 5:30 PM IST.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://serenejoshua8-create.github.io/briefing-app/">
-<meta property="og:title" content="Daily Briefing App for Arun Singh">
-<meta property="og:description" content="Geopolitical and economic briefs, delivered twice daily — Morning · 07:00 and Evening · 21:00.">
+<meta property="og:title" content="Daily Geopolitical Briefs V.3">
+<meta property="og:description" content="Geopolitical and economic briefs, delivered twice daily — Morning · 11:00 AM and Evening · 5:30 PM IST.">
 <meta property="og:image" content="https://serenejoshua8-create.github.io/briefing-app/og-image.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Daily Briefing App for Arun Singh">
-<meta name="twitter:description" content="Geopolitical and economic briefs, delivered twice daily — Morning · 07:00 and Evening · 21:00.">
+<meta name="twitter:title" content="Daily Geopolitical Briefs V.3">
+<meta name="twitter:description" content="Geopolitical and economic briefs, delivered twice daily — Morning · 11:00 AM and Evening · 5:30 PM IST.">
 <meta name="twitter:image" content="https://serenejoshua8-create.github.io/briefing-app/og-image.png">
 
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -30,15 +30,17 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
-  --ink:#10131B;--ink-2:#171B27;--ink-3:#1E2433;
-  --paper:#F1EBDD;--paper-2:#E8E1CE;
-  --ink-text:#1B1B16;--ink-text-dim:rgba(27,27,22,.60);
-  --paper-text:#ECE6D6;--paper-text-dim:rgba(236,230,214,.58);
-  --dawn:#C98A2B;--dawn-soft:rgba(201,138,43,.16);
-  --dusk:#7C6CC0;--dusk-soft:rgba(124,108,192,.18);
-  --go:#4C7A4A;--go-soft:rgba(76,122,74,.18);
-  --signal:#C1473A;--signal-soft:rgba(193,71,58,.16);
-  --line-dark:rgba(236,230,214,.14);--line-light:rgba(27,27,22,.13);
+  /* Think-tank palette: deep indigo ground, warm report-paper cards, a
+     restrained gold used only for emphasis (never as a primary color). */
+  --ink:#14152B;--ink-2:#1B1D3D;--ink-3:#242752;
+  --paper:#F6F4EE;--paper-2:#EAE6DA;
+  --ink-text:#1B1C2E;--ink-text-dim:rgba(27,28,46,.60);
+  --paper-text:#E7E5F2;--paper-text-dim:rgba(231,229,242,.58);
+  --dawn:#4F46E5;--dawn-soft:rgba(79,70,229,.18);
+  --dusk:#8B6F3D;--dusk-soft:rgba(139,111,61,.20);
+  --go:#3F7D5C;--go-soft:rgba(63,125,92,.18);
+  --signal:#B0413E;--signal-soft:rgba(176,65,62,.16);
+  --line-dark:rgba(231,229,242,.14);--line-light:rgba(27,28,46,.13);
   --radius:4px;
   --font-display:'Fraunces',serif;--font-body:'IBM Plex Sans',sans-serif;--font-mono:'IBM Plex Mono',monospace;
 }
@@ -48,7 +50,7 @@ a{color:inherit;}
 button{font-family:inherit;cursor:pointer;}
 .shell{max-width:1100px;margin:0 auto;padding:20px 20px 60px;}
 .topbar{display:flex;justify-content:space-between;align-items:center;padding-bottom:16px;border-bottom:1px solid var(--line-dark);flex-wrap:wrap;gap:10px;}
-.mark{font-family:var(--font-display);font-weight:700;font-size:24px;}
+.mark{font-family:var(--font-display);font-weight:700;font-size:19px;letter-spacing:.2px;}
 .mark span{color:var(--dawn);}
 .api-config{font-family:var(--font-mono);font-size:11px;color:var(--paper-text-dim);}
 .api-config input{background:var(--ink-2);border:1px solid var(--line-dark);color:var(--paper-text);padding:6px 8px;border-radius:4px;font-family:var(--font-mono);font-size:11px;width:260px;}
@@ -107,12 +109,24 @@ button{font-family:inherit;cursor:pointer;}
 .sources-body label{font-family:var(--font-mono);font-size:10px;text-transform:uppercase;color:var(--paper-text-dim);margin-top:8px;}
 .sources-body textarea{width:100%;background:var(--ink-2);border:1px solid var(--line-dark);color:var(--paper-text);padding:8px;border-radius:4px;font-family:var(--font-mono);font-size:12px;box-sizing:border-box;resize:vertical;}
 .sources-body input[type="file"]{font-family:var(--font-mono);font-size:11px;color:var(--paper-text-dim);}
+@media print{
+  .no-print,.install-banner,.lock-overlay{display:none!important;}
+  body{background:#fff;}
+  .shell{max-width:100%;padding:0;}
+  .topbar{border-bottom:1px solid #ccc;}
+  .mark{color:#1B1C2E;}
+  .mark span{color:var(--dawn);}
+  .sheet{background:#fff;color:#1B1C2E;padding:0;border-bottom:1px solid #ccc;border-radius:0;}
+  .meta,.eyebrow,.a-label{color:#555;}
+  .forecast{background:#f0f0f5;color:#1B1C2E;}
+  a{color:#1B1C2E;text-decoration:underline;}
+}
 </style>
 </head>
 <body>
 <div id="lockOverlay" class="lock-overlay">
   <div class="lock-box">
-    <div class="mark">07<span>0</span>0 / 2100</div>
+    <div class="mark">Daily Geopolitical Briefs <span>V.3</span></div>
     <p style="font-family:var(--font-mono);font-size:12px;margin-top:14px">Enter the access phrase to continue</p>
     <input id="lockInput" type="password" placeholder="access phrase" autocomplete="off">
     <button id="lockBtn" class="btn btn-primary" style="width:100%">Enter</button>
@@ -121,32 +135,33 @@ button{font-family:inherit;cursor:pointer;}
 </div>
 <div class="shell">
   <div class="topbar">
-    <div class="mark">07<span>0</span>0 / 2100</div>
-    <div class="api-config">
+    <div class="mark">Daily Geopolitical Briefs <span>V.3</span></div>
+    <div class="api-config no-print">
       Backend: <input id="apiBase" placeholder="https://your-app.onrender.com" value="https://briefing-app-eilh.onrender.com">
       Secret: <input id="appSecret" type="password" placeholder="x-app-secret">
     </div>
   </div>
 
-  <div class="tabs">
+  <div class="tabs no-print">
     <button class="tab active" data-tab="briefing">Briefing</button>
     <button class="tab" data-tab="archive">Archive</button>
     <button class="tab" data-tab="weekly">Weekly</button>
   </div>
 
   <section id="tab-briefing">
-    <div class="row">
-      <button class="pill active" id="pillAM">Morning · 0700</button>
-      <button class="pill" id="pillPM">Evening · 2100</button>
+    <div class="row no-print">
+      <button class="pill active" id="pillAM">Morning · 11:00 AM</button>
+      <button class="pill" id="pillPM">Evening · 5:30 PM</button>
       <button class="btn btn-primary" id="runBtn">Run Briefing</button>
+      <button class="btn" id="exportPdfBtn">Export as PDF</button>
     </div>
-    <div class="row">
+    <div class="row no-print">
       <button class="pill active" id="viewSum">Summary (12)</button>
       <button class="pill" id="viewAna">Analysis (Top 5)</button>
       <span style="font-family:var(--font-mono);font-size:10px;color:var(--paper-text-dim)">switching does not re-run the briefing</span>
     </div>
 
-    <details class="sources-panel">
+    <details class="sources-panel no-print">
       <summary>Sources (optional) — supply articles/gov sites instead of autonomous search</summary>
       <div class="sources-body">
         <label>Article URLs (one per line — paywalled or open, fetched directly)</label>
@@ -288,7 +303,7 @@ function sheetHtml(record, view){
   const v = record.verify||{};
   return `<div class="sheet">
     <div class="meta">
-      <span>${record.session==='AM'?'Morning · 0700':'Evening · 2100'}</span>
+      <span>${record.session==='AM'?'Morning · 11:00 AM':'Evening · 5:30 PM'}</span>
       <span>${record.date}</span>
       <span class="stamp ${v.clean?'good':'low'}">${v.clean?'verified':'fixed '+v.fixed+' / dropped '+v.dropped}</span>
       ${record.partial?'<span class="stamp low">partial</span>':''}
@@ -437,7 +452,7 @@ function groupByDay(records){
 function dayGroupHtml(date, sessions, view, index){
   const sessionTags = sessions.map(r=>{
     const v = r.verify||{};
-    return `<span>${r.session==='AM'?'0700':'2100'} · ${v.clean?'verified':'issues'}</span>`;
+    return `<span>${r.session==='AM'?'11:00 AM':'5:30 PM'} · ${v.clean?'verified':'issues'}</span>`;
   }).join('');
   return `<details class="day-group"${index===0?' open':''}>
     <summary>
@@ -496,6 +511,20 @@ el('archSum').addEventListener('click',()=>{state.archView='summary';el('archSum
 el('archAna').addEventListener('click',()=>{state.archView='analysis';el('archAna').classList.add('active');el('archSum').classList.remove('active');renderArchive();});
 el('runBtn').addEventListener('click', runBriefing);
 el('weeklyBtn').addEventListener('click', runWeekly);
+
+// PDF export: uses the browser's own print-to-PDF rather than a bundled
+// library (jsPDF/html2canvas etc.) -- no extra dependency, works offline,
+// and produces real selectable text rather than a rasterized image. Print
+// CSS below hides everything except the currently-displayed sheet; setting
+// document.title first gives the browser's "Save as PDF" dialog a sensible
+// suggested filename.
+function exportCurrentAsPdf(){
+  if(!state.current){ alert('Nothing to export yet — run or open a briefing first.'); return; }
+  document.title = `Daily Geopolitical Briefs - ${state.current.session} - ${state.current.date}`;
+  window.print();
+}
+window.addEventListener('afterprint', () => { document.title = 'Daily Geopolitical Briefs V.3'; });
+el('exportPdfBtn').addEventListener('click', exportCurrentAsPdf);
 
 // Add-to-home-screen: register the service worker (required by Chrome/Android
 // for installability), then show a custom "Install" banner instead of relying

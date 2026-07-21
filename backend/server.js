@@ -113,7 +113,7 @@ async function updateDriveDoc(fileId, htmlContent) {
 // The Doc's file ID is persisted on the briefings row itself (drive_file_id)
 // so later calls know whether to create or update.
 async function syncBriefingToDrive(record) {
-  const title = `${record.date} ${record.session === 'AM' ? 'Morning · 0700' : 'Evening · 2100'}`;
+  const title = `${record.date} ${record.session === 'AM' ? 'Morning · 11:00 AM' : 'Evening · 5:30 PM'}`;
   const html = recordToDriveHtml(record);
   if (record.drive_file_id) {
     try {
@@ -145,7 +145,7 @@ function recordToDriveHtml(record) {
   const pdfs = record.meta?.pdfArchive || [];
   const pdfsHtml = pdfs.length ? `<h2>Source PDFs</h2>${pdfs.map(p => `<p><a href="${esc(p.storageUrl)}">${esc(p.sourceName || p.filename)}</a></p>`).join('\n')}` : '';
   return `<html><body>
-    <p>${record.session === 'AM' ? 'Morning &middot; 0700' : 'Evening &middot; 2100'} / ${record.date} / ${stamp}</p>
+    <p>${record.session === 'AM' ? 'Morning &middot; 11:00 AM' : 'Evening &middot; 5:30 PM'} / ${record.date} / ${stamp}</p>
     ${topicsHtml}
     ${pdfsHtml}
   </body></html>`;
@@ -295,7 +295,7 @@ function buildDailyPrompt(config, dateStr, session) {
 
   return `You are a senior geopolitical and economic intelligence analyst preparing a twice-daily briefing for a single expert reader in Delhi, India.
 
-Today is ${dateStr} (IST). This is the ${session === 'AM' ? 'MORNING (0700 IST)' : 'EVENING (2100 IST)'} briefing.
+Today is ${dateStr} (IST). This is the ${session === 'AM' ? 'MORNING (11:00 AM IST)' : 'EVENING (5:30 PM IST)'} briefing.
 
 The reader has selected ONLY these topics:
 ${topicLines}${extraLine}
@@ -758,7 +758,7 @@ function buildSourceDrivenPrompt(config, dateStr, session, materialBlock) {
 
   return `You are a senior geopolitical and economic intelligence analyst preparing a twice-daily briefing for a single expert reader in Delhi, India.
 
-Today is ${dateStr} (IST). This is the ${session === 'AM' ? 'MORNING (0700 IST)' : 'EVENING (2100 IST)'} briefing.
+Today is ${dateStr} (IST). This is the ${session === 'AM' ? 'MORNING (11:00 AM IST)' : 'EVENING (5:30 PM IST)'} briefing.
 
 The reader has selected ONLY these topics:
 ${topicLines}${extraLine}

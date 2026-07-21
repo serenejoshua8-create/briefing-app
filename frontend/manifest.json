@@ -1,12 +1,12 @@
 {
-  "name": "0700 / 2100 — Briefing Room",
-  "short_name": "0700/2100",
+  "name": "Daily Geopolitical Briefs V.3",
+  "short_name": "Geopolitical Briefs",
   "description": "Twice-daily geopolitical and economic briefing.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#10131B",
-  "theme_color": "#10131B",
+  "background_color": "#14152B",
+  "theme_color": "#14152B",
   "icons": [
     { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },

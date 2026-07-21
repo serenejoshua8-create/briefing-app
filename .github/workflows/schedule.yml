@@ -11,10 +11,10 @@ name: Trigger AM/PM briefing
 # source-driven result with a weaker no-sources autonomous-search one.
 on:
   schedule:
-    # 01:45 UTC = 07:15 IST (after the ~06:50 IST Claude task)
-    - cron: '45 1 * * *'
-    # 15:50 UTC = 21:20 IST (after the ~20:41 IST Claude task)
-    - cron: '50 15 * * *'
+    # 05:45 UTC = 11:15 IST (after the ~10:50 IST Claude task, for the 11:00 AM IST briefing)
+    - cron: '45 5 * * *'
+    # 12:15 UTC = 17:45 IST (after the ~17:10 IST Claude task, for the 5:30 PM IST briefing)
+    - cron: '15 12 * * *'
   workflow_dispatch: {}
 
 jobs:
@@ -25,7 +25,7 @@ jobs:
         id: session
         run: |
           HOUR=$(date -u +%H)
-          if [ "$HOUR" = "01" ]; then echo "session=AM" >> "$GITHUB_OUTPUT"
+          if [ "$HOUR" = "05" ]; then echo "session=AM" >> "$GITHUB_OUTPUT"
           else echo "session=PM" >> "$GITHUB_OUTPUT"
           fi
           echo "date=$(TZ=Asia/Kolkata date +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
