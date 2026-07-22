@@ -69,6 +69,7 @@ button{font-family:inherit;cursor:pointer;}
 .stamp.good{background:var(--go-soft);color:#3E6B3C;}
 .stamp.low{background:var(--signal-soft);color:var(--signal);}
 .topic{padding-bottom:18px;margin-bottom:18px;border-bottom:1px dashed var(--line-light);}
+.section-label{font-family:var(--font-mono);font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--ink-text-dim);border-top:1px solid var(--line-light);padding-top:16px;margin:4px 0 16px;}
 .topic h3{font-family:var(--font-display);font-size:18px;margin:0 0 8px;}
 .eyebrow{display:flex;gap:6px;font-family:var(--font-mono);font-size:9.5px;text-transform:uppercase;color:var(--ink-text-dim);margin-bottom:8px;}
 .eyebrow span{border:1px solid var(--line-light);padding:2px 6px;border-radius:3px;}
@@ -300,6 +301,8 @@ function pdfArchiveHtml(record){
 }
 function sheetHtml(record, view){
   const topics = view==='analysis' ? record.topics.filter(t=>t.detailed) : record.topics;
+  const mainTopics = topics.filter(t=>t.topicId !== 'extra');
+  const otherTopics = topics.filter(t=>t.topicId === 'extra');
   const v = record.verify||{};
   return `<div class="sheet">
     <div class="meta">
@@ -308,7 +311,8 @@ function sheetHtml(record, view){
       <span class="stamp ${v.clean?'good':'low'}">${v.clean?'verified':'fixed '+v.fixed+' / dropped '+v.dropped}</span>
       ${record.partial?'<span class="stamp low">partial</span>':''}
     </div>
-    ${topics.map(t=>topicHtml(t, view==='analysis')).join('') || '<div class="empty">Nothing in this view.</div>'}
+    ${mainTopics.map(t=>topicHtml(t, view==='analysis')).join('') || (otherTopics.length ? '' : '<div class="empty">Nothing in this view.</div>')}
+    ${otherTopics.length ? `<div class="section-label">Other Updates</div>${otherTopics.map(t=>topicHtml(t, view==='analysis')).join('')}` : ''}
     ${pdfArchiveHtml(record)}
   </div>`;
 }

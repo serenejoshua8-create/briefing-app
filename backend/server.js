@@ -128,7 +128,7 @@ function recordToDriveHtml(record) {
   const esc = s => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const v = record.verify || {};
   const stamp = v.clean ? 'verified' : `fixed ${v.fixed || 0} / dropped ${v.dropped || 0}`;
-  const topicsHtml = (record.topics || []).map(t => {
+  const renderTopic = t => {
     const pointsHtml = (t.points || [])
       .map(p => `<p>&#8220;${esc(p.quote)}&#8221; &mdash; ${esc(p.sourceName)}${p.url ? ` (<a href="${esc(p.url)}">link</a>)` : ''}</p>`)
       .join('\n');
@@ -141,7 +141,15 @@ function recordToDriveHtml(record) {
       <h3>Outlook</h3><p>${esc(a.outlook)}</p>
       <p><em>${esc(a.confidence)} &middot; ${a.confidencePct}% &middot; ${esc(a.confidenceReason)}</em></p>` : '';
     return `<h2>${esc(t.headline)}</h2>${pointsHtml}${analysisHtml}<hr>`;
-  }).join('\n');
+  };
+  const topics = record.topics || [];
+  // Items that don't fit any of the reader's selected themes (topicId
+  // "extra") get grouped under their own heading rather than mixed in with
+  // the themed topics -- matches the app's own "Other Updates" section.
+  const mainTopics = topics.filter(t => t.topicId !== 'extra');
+  const otherTopics = topics.filter(t => t.topicId === 'extra');
+  const topicsHtml = mainTopics.map(renderTopic).join('\n')
+    + (otherTopics.length ? `<h2>Other Updates</h2>${otherTopics.map(renderTopic).join('\n')}` : '');
   const pdfs = record.meta?.pdfArchive || [];
   const pdfsHtml = pdfs.length ? `<h2>Source PDFs</h2>${pdfs.map(p => `<p><a href="${esc(p.storageUrl)}">${esc(p.sourceName || p.filename)}</a></p>`).join('\n')}` : '';
   return `<html><body>
