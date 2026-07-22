@@ -1030,16 +1030,23 @@ app.post('/api/briefing/run', requireSecret, async (req, res) => {
     }
 
     const verified = await verifyDispatch(sanitized, dateStr, session, sanitizeOpts);
-    const { data: existing } = await supabase.from('briefings').select('drive_file_id').eq('date', dateStr).eq('session', session).single();
+    const { data: existing } = await supabase.from('briefings').select('*').eq('date', dateStr).eq('session', session).single();
+
+    // A record that only exists because of instant PDF-upload analysis
+    // (verify.mode === 'pdf-instant', no real dispatch has run yet for
+    // today) shouldn't be wiped out by this generation -- fold its topics
+    // and PDF archive into the fresh dispatch instead of overwriting them.
+    const priorPdfTopics = existing?.verify?.mode === 'pdf-instant' ? (existing.topics || []) : [];
+    const priorPdfArchive = existing?.verify?.mode === 'pdf-instant' ? (existing.meta?.pdfArchive || []) : [];
 
     const record = {
       date: dateStr,
       session,
       generated_at: new Date().toISOString(),
-      topics: verified.topics,
+      topics: [...priorPdfTopics, ...verified.topics],
       partial,
       verify: { fixed: verified.fixed, dropped: verified.dropped, clean: verified.clean },
-      meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive },
+      meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive: [...priorPdfArchive, ...pdfArchive] },
       drive_file_id: existing?.drive_file_id || null,
     };
 
@@ -1083,16 +1090,21 @@ app.post('/api/briefing/submit', requireSecret, async (req, res) => {
     const { data: cfgRow } = await supabase.from('app_config').select('*').eq('id', 1).single();
     const config = { topics: cfgRow?.topics || [], extraTopics: cfgRow?.extra_topics || '' };
     const dropped = rawTopics.length - sanitized.length;
-    const { data: existing } = await supabase.from('briefings').select('drive_file_id').eq('date', dateStr).eq('session', session).single();
+    const { data: existing } = await supabase.from('briefings').select('*').eq('date', dateStr).eq('session', session).single();
+
+    // Don't let a real dispatch submission wipe out topics that only exist
+    // because of instant PDF-upload analysis earlier in the day.
+    const priorPdfTopics = existing?.verify?.mode === 'pdf-instant' ? (existing.topics || []) : [];
+    const priorPdfArchive = existing?.verify?.mode === 'pdf-instant' ? (existing.meta?.pdfArchive || []) : [];
 
     const record = {
       date: dateStr,
       session,
       generated_at: new Date().toISOString(),
-      topics: sanitized,
+      topics: [...priorPdfTopics, ...sanitized],
       partial: !!partial,
       verify: { fixed: 0, dropped, clean: dropped === 0, mode: 'claude-direct' },
-      meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive: pdfArchive || [] },
+      meta: { topics: config.topics, extraTopics: config.extraTopics, pdfArchive: [...priorPdfArchive, ...(pdfArchive || [])] },
       drive_file_id: existing?.drive_file_id || null,
     };
 

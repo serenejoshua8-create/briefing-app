@@ -398,12 +398,18 @@ async function runBriefing(){
   try{
     // If today's session was already generated (e.g. by a scheduled run), just
     // show it instantly instead of regenerating — avoids wasted API cost and
-    // matches what already happened for the day.
+    // matches what already happened for the day. But a record whose ONLY
+    // content came from instant PDF analysis (verify.mode === 'pdf-instant')
+    // isn't a real dispatch -- it's just whatever PDFs you've uploaded so
+    // far -- so that case falls through to a real generation instead of
+    // being shown as if it were the finished briefing.
     try{
       const existing = await api(`/api/briefing/${todayIST()}/${state.session}`);
-      state.current = existing;
-      el('briefingContent').innerHTML = sheetHtml(existing, state.view);
-      return;
+      if(existing.verify?.mode !== 'pdf-instant'){
+        state.current = existing;
+        el('briefingContent').innerHTML = sheetHtml(existing, state.view);
+        return;
+      }
     }catch(e){ /* 404 means nothing generated yet — fall through to generate below */ }
 
     await runBriefingGenerate();
