@@ -657,17 +657,30 @@ const HAS_OPENROUTER = !!process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = 'nvidia/nemotron-3-nano-30b-a3b:free';
 async function callOpenRouter(prompt, { retries = 2, baseDelayMs = 1500 } = {}) {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: OPENROUTER_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    });
+    let res;
+    try {
+      res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+        },
+        body: JSON.stringify({
+          model: OPENROUTER_MODEL,
+          messages: [{ role: 'user', content: prompt }],
+        }),
+      });
+    } catch (e) {
+      // A network-level failure (DNS hiccup, connection reset, etc.) throws
+      // here as a generic "fetch failed" TypeError before any HTTP response
+      // exists at all -- confirmed live (OpenRouter itself was reachable and
+      // healthy moments later from elsewhere), so this is transient and
+      // worth retrying exactly like a 429/503 response, not surfacing
+      // immediately as a hard failure.
+      if (attempt >= retries) throw e;
+      await new Promise(r => setTimeout(r, baseDelayMs * Math.pow(2, attempt)));
+      continue;
+    }
     if (res.ok) {
       const data = await res.json();
       return data.choices?.[0]?.message?.content || '';
