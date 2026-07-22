@@ -1146,13 +1146,17 @@ app.post('/api/pdf/analyze', requireSecret, async (req, res) => {
     const extracted = await extractPdfText(base64, filename);
 
     // Priority: an explicitly-typed URL, then whatever URL the PDF's own
-    // text already contains (print-to-PDF saves almost always have this),
-    // then a Gemini web-search lookup using the (title, publication) pair
-    // parsed from the filename -- much cleaner input than the raw filename
-    // used for both fields, which is what made this lookup unreliable before.
+    // text already contains (print-to-PDF saves almost always have this).
+    // Deliberately NOT falling back to the Gemini web-search lookup here --
+    // that call shares Gemini's 20-requests/day free-tier quota with
+    // everything else (dispatch generation, verification, etc.), and with
+    // several PDFs uploaded in a day it was eating into that budget enough
+    // to help trigger the quota errors seen elsewhere. Instant PDF analysis
+    // now never touches Gemini at all; if neither source has a URL, the
+    // topic is just published without a link (still fully usable) rather
+    // than risk contributing to a quota failure.
     const { title: parsedTitle, publication: parsedPublication } = parseFilenameTitlePublication(filename);
-    let url = sourceUrl || extractUrlFromPdfText(extracted.text);
-    if (!url) url = await lookupArticleUrl(extracted.guessedTitle || parsedTitle, parsedPublication);
+    const url = sourceUrl || extractUrlFromPdfText(extracted.text);
     const sourceName = resolveSourceNameFromUrl(url) || parsedPublication || extracted.sourceName;
 
     let rawTopic;
